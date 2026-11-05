@@ -1,10 +1,29 @@
 name: CI
+
+# Runs for pull requests and for main (not for every push to every branch),
+# and a newer push cancels a run that is still going.
 on:
   push:
+    branches: [main]
   pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Playwright's image already contains Chromium and its system libraries,
+    # so nothing has to be downloaded or apt-installed (that took ~10 minutes).
+    # Keep the version in sync with PLAYWRIGHT_VERSION below.
+    container:
+      image: mcr.microsoft.com/playwright:v1.64.1-noble
+      options: --ipc=host
+    env:
+      PLAYWRIGHT_VERSION: 1.64.1
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -16,6 +35,5 @@ jobs:
       - run: npm run build
       - name: Browser tests (OCR + end-to-end)
         run: |
-          npm install --no-save playwright
-          npx playwright install --with-deps chromium
+          npm install --no-save "playwright@${PLAYWRIGHT_VERSION}"
           npm run test:browser
