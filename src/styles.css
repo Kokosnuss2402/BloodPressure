@@ -529,6 +529,29 @@ main {
   min-height: 70px;
   resize: vertical;
 }
+/* iOS Safari gives date/time inputs an intrinsic minimum width and ignores
+   width: 100%, so they overflow narrow cards. Drop the native look and the
+   minimum width; keep the height (iOS collapses an empty unstyled date input). */
+.field input,
+.field select,
+.field textarea {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+}
+.field input[type='datetime-local'],
+.field input[type='date'],
+.field input[type='time'] {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 46px;
+  line-height: 24px;
+  text-align: left;
+}
+.field input::-webkit-date-and-time-value {
+  text-align: left;
+  margin: 0;
+}
 .field input:focus,
 .field select:focus,
 .field textarea:focus,
