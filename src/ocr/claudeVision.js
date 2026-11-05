@@ -28,6 +28,17 @@ const SCHEMAS = {
   },
 };
 
+SCHEMAS.weight = {
+  type: 'object',
+  properties: {
+    readable: { type: 'boolean', description: 'false if no weight is visible' },
+    value: { anyOf: [{ type: 'number' }, { type: 'null' }], description: 'number exactly as displayed, with its decimal point' },
+    unit: { anyOf: [{ type: 'string', enum: ['kg', 'lb'] }, { type: 'null' }] },
+  },
+  required: ['readable', 'value', 'unit'],
+  additionalProperties: false,
+};
+
 const PROMPTS = {
   bp:
     'This photo shows the display of a blood pressure monitor. Read the systolic (SYS), ' +
@@ -36,6 +47,9 @@ const PROMPTS = {
   glucose:
     'This photo shows the display of a blood glucose meter. Read the measured glucose value ' +
     'exactly as shown (keep a decimal point if displayed) and its unit if visible. Do not guess.',
+  weight:
+    'This photo shows a bathroom scale; its display may be small and far away. Read the weight ' +
+    'exactly as shown on the display (keep the decimal point) and its unit if visible. Do not guess.',
 };
 
 /**
@@ -79,6 +93,7 @@ export async function readWithClaude(jpegBlob, kind, apiKey) {
     if (Number.isInteger(out.pulse)) values.pulse = out.pulse;
     return { values };
   }
+  if (kind === 'weight') return { values: { weightDisplayed: out.value, weightUnit: out.unit } };
   return { values: { glucoseDisplayed: out.value, glucoseUnit: out.unit } };
 }
 

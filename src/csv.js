@@ -1,4 +1,4 @@
-import { MEASUREMENT_TYPES, GLUCOSE_CONTEXTS, MGDL_PER_MMOL } from './types.js';
+import { MEASUREMENT_TYPES, GLUCOSE_CONTEXTS, MGDL_PER_MMOL, LB_PER_KG, bmiOf } from './types.js';
 
 const pad = (n) => String(n).padStart(2, '0');
 export const localDate = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
@@ -23,6 +23,9 @@ export const CSV_COLUMNS = [
   'glucose_mg_dl',
   'glucose_mmol_l',
   'glucose_context',
+  'weight_kg',
+  'weight_lb',
+  'bmi',
   'category',
   'tags',
   'note',
@@ -33,7 +36,7 @@ export const CSV_COLUMNS = [
 /**
  * Build a CSV string from measurements.
  * @param {Array} measurements
- * @param {{delimiter?: ',' | ';', decimal?: '.' | ','}} [opts]
+ * @param {{delimiter?: ',' | ';', decimal?: '.' | ',', settings?: object}} [opts]  settings: heightCm for BMI
  */
 export function toCSV(measurements, opts = {}) {
   const delim = opts.delimiter ?? ',';
@@ -45,7 +48,8 @@ export function toCSV(measurements, opts = {}) {
     const d = new Date(m.timestamp);
     const v = m.values ?? {};
     const type = MEASUREMENT_TYPES[m.type];
-    const cat = type?.classify(v);
+    const cat = type?.classify(v, opts.settings);
+    const bmi = bmiOf(v.weight, opts.settings?.heightCm);
     const ctx = GLUCOSE_CONTEXTS.find((c) => c.id === v.context);
     const row = [
       localDate(d),
@@ -57,6 +61,9 @@ export function toCSV(measurements, opts = {}) {
       num(v.glucose),
       Number.isFinite(v.glucose) ? num(v.glucose / MGDL_PER_MMOL, 1) : '',
       ctx?.label ?? '',
+      num(v.weight, 1),
+      Number.isFinite(v.weight) ? num(v.weight * LB_PER_KG, 1) : '',
+      Number.isFinite(bmi) ? num(bmi, 1) : '',
       cat?.label ?? '',
       defuse((m.tags ?? []).join('; ')),
       defuse(m.note ?? ''),

@@ -1,10 +1,14 @@
 // Measurement type registry. Every measurement kind (blood pressure, blood
-// glucose, ...) is described here: its fields, plausibility ranges, how to map
-// numbers read from a device display onto fields, and how to classify a value.
-// Adding a new kind means adding an entry here; storage, history, CSV export
-// and charts are driven by this description.
+// glucose, weight) is described here: its fields, units, plausibility ranges,
+// how to map numbers read from a device display onto fields, and how to
+// classify a value. Adding a new kind means adding an entry here; storage,
+// history, editor, CSV export and charts are driven by this description.
+//
+// Values are stored in one canonical unit per field (mmHg, mg/dL, kg); a field's
+// unit(settings) / toDisplay() / fromInput() convert for the unit the user chose.
 
 export const MGDL_PER_MMOL = 18.016;
+export const LB_PER_KG = 2.20462;
 
 export const GLUCOSE_CONTEXTS = [
   { id: 'fasting', label: 'Fasting' },
@@ -15,6 +19,20 @@ export const GLUCOSE_CONTEXTS = [
 ];
 
 const inRange = (v, f) => Number.isFinite(v) && v >= f.min && v <= f.max;
+const round1 = (v) => Math.round(v * 10) / 10;
+
+/** Single-number displays: the most confidently decoded row, then the largest digits. */
+const bestSingleRow = (rows) =>
+  [...rows].sort((a, b) => b.confidence - a.confidence || b.text.length - a.text.length || b.height - a.height)[0] ?? null;
+
+/** Plain integer field with a fixed unit (mmHg, /min). */
+const intField = (f) => ({
+  unit: () => f.unitLabel,
+  toDisplay: (v) => (Number.isFinite(v) ? String(Math.round(v)) : ''),
+  fromInput: (n) => Math.round(n),
+  decimalInput: () => false,
+  ...f,
+});
 
 // Ordinal ranks 0..5 map onto one blue ramp in the UI (colour-blind safe);
 // every level is always shown with its text label, never colour alone.
@@ -34,10 +52,11 @@ export const MEASUREMENT_TYPES = {
     id: 'bp',
     label: 'Blood pressure',
     shortLabel: 'BP',
+    tabLabel: 'Pressure',
     fields: [
-      { key: 'sys', label: 'Systolic', short: 'SYS', unit: 'mmHg', min: 50, max: 280, required: true },
-      { key: 'dia', label: 'Diastolic', short: 'DIA', unit: 'mmHg', min: 25, max: 180, required: true },
-      { key: 'pulse', label: 'Pulse', short: 'PUL', unit: '/min', min: 25, max: 250, required: false },
+      intField({ key: 'sys', label: 'Systolic', short: 'SYS', unitLabel: 'mmHg', min: 50, max: 280, required: true }),
+      intField({ key: 'dia', label: 'Diastolic', short: 'DIA', unitLabel: 'mmHg', min: 25, max: 180, required: true }),
+      intField({ key: 'pulse', label: 'Pulse', short: 'PUL', unitLabel: '/min', min: 25, max: 250, required: false }),
     ],
     validate(v) {
       const errors = [];
@@ -103,10 +122,23 @@ export const MEASUREMENT_TYPES = {
     id: 'glucose',
     label: 'Blood sugar',
     shortLabel: 'Glucose',
+    tabLabel: 'Sugar',
     fields: [
       // stored canonically in mg/dL; displayed in the unit chosen in settings
-      { key: 'glucose', label: 'Glucose', short: 'GLU', unit: 'mg/dL', min: 10, max: 700, required: true },
+      {
+        key: 'glucose',
+        label: 'Glucose',
+        short: 'GLU',
+        min: 10,
+        max: 700,
+        required: true,
+        unit: (st) => st?.glucoseUnit ?? 'mg/dL',
+        toDisplay: (v, st) => (Number.isFinite(v) ? formatGlucose(v, st?.glucoseUnit) : ''),
+        fromInput: (n, st) => toMgdl(n, st?.glucoseUnit),
+        decimalInput: (st) => st?.glucoseUnit === 'mmol/L',
+      },
     ],
+    defaults: () => ({ context: 'fasting' }),
     validate(v) {
       const f = this.fields[0];
       if (v.glucose == null || v.glucose === '') return ['Glucose value is required'];
@@ -127,22 +159,103 @@ export const MEASUREMENT_TYPES = {
       if (g < 200) return { id: 'elevated', label: 'Elevated', rank: 2 };
       return { id: 'high', label: 'High', rank: 4 };
     },
-    format(v, unit = 'mg/dL') {
+    format(v, st) {
+      const unit = st?.glucoseUnit ?? 'mg/dL';
       const ctx = GLUCOSE_CONTEXTS.find((c) => c.id === v.context);
       return `${formatGlucose(v.glucose, unit)} ${unit}${ctx ? ` · ${ctx.label}` : ''}`;
     },
-    fromDisplayRows(rows) {
-      // glucose meters show one big number; take the tallest plausible row
+    fromDisplayRows(rows, st) {
+      // Glucose meters show one big number. A decimal point means mmol/L
+      // (mg/dL is always whole); if no point was seen but the user works in
+      // mmol/L, the meter's one decimal was missed: 56 -> 5.6.
       const f = this.fields[0];
-      const cands = rows.filter((r) => inRange(r.value, f)).sort((a, b) => b.height - a.height);
-      if (!cands.length) return { values: {}, score: 0, confidence: 0 };
-      const r = cands[0];
-      return { values: { glucose: r.value }, score: 0.6 + 0.4 * r.confidence, confidence: r.confidence };
+      const toMg = (r) => {
+        if (r.decimals > 0) return toMgdl(r.number, 'mmol/L');
+        return st?.glucoseUnit === 'mmol/L' ? toMgdl(r.value / 10, 'mmol/L') : r.value;
+      };
+      const r = bestSingleRow(rows.filter((x) => inRange(toMg(x), f)));
+      if (!r) return { values: {}, score: 0, confidence: 0 };
+      return { values: { glucose: toMg(r) }, score: 0.6 + 0.4 * r.confidence, confidence: r.confidence, row: r };
     },
   },
 };
 
+MEASUREMENT_TYPES.weight = {
+  id: 'weight',
+  label: 'Weight',
+  shortLabel: 'Weight',
+  // scales are photographed from standing height: the display is small in the frame
+  farDisplay: true,
+  fields: [
+    {
+      key: 'weight',
+      label: 'Weight',
+      short: 'WT',
+      min: 2, // kg
+      max: 350,
+      required: true,
+      unit: (st) => st?.weightUnit ?? 'kg',
+      toDisplay: (v, st) => (Number.isFinite(v) ? formatWeight(v, st?.weightUnit) : ''),
+      fromInput: (n, st) => toKg(n, st?.weightUnit),
+      decimalInput: () => true,
+    },
+  ],
+  validate(v) {
+    const f = this.fields[0];
+    if (!Number.isFinite(v.weight)) return ['Weight is required'];
+    if (!inRange(v.weight, f)) return [`Weight must be between ${f.min} and ${f.max} kg`];
+    return [];
+  },
+  /** WHO BMI categories; needs the body height from settings. */
+  classify(v, st) {
+    const bmi = bmiOf(v.weight, st?.heightCm);
+    if (!Number.isFinite(bmi)) return null;
+    const label = (l) => `${l} · BMI ${bmi.toFixed(1)}`;
+    if (bmi < 18.5) return { id: 'underweight', label: label('Underweight'), rank: 2 };
+    if (bmi < 25) return { id: 'normal', label: label('Normal'), rank: 0 };
+    if (bmi < 30) return { id: 'overweight', label: label('Overweight'), rank: 2 };
+    if (bmi < 35) return { id: 'obese1', label: label('Obesity I'), rank: 3 };
+    if (bmi < 40) return { id: 'obese2', label: label('Obesity II'), rank: 4 };
+    return { id: 'obese3', label: label('Obesity III'), rank: 5 };
+  },
+  format(v, st) {
+    const unit = st?.weightUnit ?? 'kg';
+    return `${formatWeight(v.weight, unit)} ${unit}`;
+  },
+  fromDisplayRows(rows, st) {
+    // Scales show one number, normally with one decimal ("72.4"). If the
+    // decimal point was not detected and the number is too large to be a
+    // weight, the point was missed: 724 -> 72.4.
+    const unit = st?.weightUnit ?? 'kg';
+    const f = this.fields[0];
+    const toW = (r) => {
+      let n = r.decimals > 0 ? r.number : r.value;
+      if (!(r.decimals > 0) && toKg(n, unit) > f.max) n /= 10;
+      return toKg(n, unit);
+    };
+    const r = bestSingleRow(rows.filter((x) => x.text.length >= 2 && inRange(toW(x), f)));
+    if (!r) return { values: {}, score: 0, confidence: 0 };
+    // a decimal point found where one is expected makes the reading more trustworthy
+    const score = (0.6 + 0.4 * r.confidence) * (r.decimals > 0 ? 1 : 0.9);
+    return { values: { weight: toW(r) }, score, confidence: r.confidence, row: r };
+  },
+};
+
 export const TYPE_LIST = Object.values(MEASUREMENT_TYPES);
+
+export function toKg(value, unit) {
+  return round1(unit === 'lb' ? value / LB_PER_KG : value);
+}
+
+export function formatWeight(kg, unit) {
+  if (!Number.isFinite(kg)) return '–';
+  return (unit === 'lb' ? kg * LB_PER_KG : kg).toFixed(1);
+}
+
+export function bmiOf(kg, heightCm) {
+  if (!Number.isFinite(kg) || !Number.isFinite(heightCm) || heightCm < 50) return NaN;
+  return kg / (heightCm / 100) ** 2;
+}
 
 export function toMgdl(value, unit) {
   return unit === 'mmol/L' ? Math.round(value * MGDL_PER_MMOL) : Math.round(value);

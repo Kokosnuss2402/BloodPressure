@@ -203,15 +203,17 @@ function strokeWidth(c, w, bw, bh) {
   return Math.min(median(hr), median(vr));
 }
 
-function segmentCandidates(comps, w, h) {
+// cropped: the image is a close crop around the display, so glyphs may fill most of it
+// far: also keep the tiny bars of a display far away in the frame (more noise)
+function segmentCandidates(comps, w, h, cropped = false, far = false) {
   const minDim = Math.min(w, h);
   const out = [];
   for (const c of comps) {
     const bw = c.maxX - c.minX + 1;
     const bh = c.maxY - c.minY + 1;
     const area = c.pixels.length;
-    if (area < Math.max(12, (minDim * 0.006) ** 2)) continue;
-    if (bh > h * 0.25 || bw > w * 0.3) continue;
+    if (area < Math.max(12, (minDim * (far ? 0.0035 : 0.006)) ** 2)) continue;
+    if (bh > h * (cropped ? 0.9 : 0.25) || bw > w * (cropped ? 0.5 : 0.3)) continue;
     if (c.minX === 0 || c.minY === 0 || c.maxX === w - 1 || c.maxY === h - 1) continue;
     const length = Math.max(bw, bh);
     const thickness = strokeWidth(c, w, bw, bh);
@@ -252,6 +254,53 @@ function segmentCandidates(comps, w, h) {
     });
   }
   return out;
+}
+
+/**
+ * Italic slant of the digits: the shear x' = x - s*y under which the segment
+ * pixels line up most sharply in columns (sum of squared column counts).
+ * Works for separate bar segments and for blobs of merged segments alike.
+ */
+function estimateSlant(segs, w) {
+  // Separate bar segments (most LCDs up close): their own slope is the most reliable cue.
+  const bars = segs.filter((sg) => sg.vertical && !sg.joined && sg.maxY - sg.minY > 3 * sg.thickness);
+  if (bars.length >= 4) {
+    const m = median(bars.map((v) => v.slope));
+    return Number.isFinite(m) && Math.abs(m) <= 0.4 ? m : 0;
+  }
+  // Merged segments (far away / tight gaps): column-projection sharpness.
+  const pts = [];
+  for (const sg of segs) {
+    if (!sg.vertical) continue;
+    const step = Math.max(1, Math.floor(sg.pixels.length / 400)); // subsample big blobs
+    for (let i = 0; i < sg.pixels.length; i += step) pts.push(sg.pixels[i]);
+  }
+  if (pts.length < 50) return 0;
+  const xs = new Float32Array(pts.length);
+  const ys = new Float32Array(pts.length);
+  pts.forEach((p, i) => {
+    xs[i] = p % w;
+    ys[i] = (p / w) | 0;
+  });
+  let best = 0;
+  let bestScore = -1;
+  const hist = new Map();
+  for (let s = -0.35; s <= 0.3501; s += 0.025) {
+    hist.clear();
+    for (let i = 0; i < xs.length; i++) {
+      const b = Math.round(xs[i] - s * ys[i]);
+      hist.set(b, (hist.get(b) ?? 0) + 1);
+    }
+    let score = 0;
+    for (const c of hist.values()) score += c * c;
+    // prefer upright when scores are nearly equal
+    score *= 1 - 0.15 * Math.abs(s);
+    if (score > bestScore) {
+      bestScore = score;
+      best = s;
+    }
+  }
+  return Math.abs(best) < 0.0125 ? 0 : best;
 }
 
 function shearBoxes(segs, w, s) {
@@ -410,24 +459,61 @@ function decodeRow(row, w, s, mask) {
 }
 
 /**
+ * Look for a decimal point: a small compact blob near the baseline, in the gap
+ * between two digits of the row. Returns { decimals } = digits after the point.
+ */
+function findDecimal(row, cands, w, slant) {
+  if (row.length < 2) return { decimals: 0 };
+  const t = median(row.map((d) => d.t));
+  const y1 = Math.max(...row.map((d) => d.box.y1));
+  const y0 = Math.min(...row.map((d) => d.box.y0));
+  const rh = y1 - y0 + 1;
+  const sorted = [...row].sort((a, b) => a.box.x0 - b.box.x0);
+  let best = null;
+  for (const c of cands) {
+    const bw = c.maxX - c.minX + 1;
+    const bh = c.maxY - c.minY + 1;
+    const area = c.pixels.length;
+    if (bw < 0.45 * t || bh < 0.45 * t || bw > 2.4 * t || bh > 2.4 * t) continue;
+    if (area < 0.25 * t * t || area > 5 * t * t || area / (bw * bh) < 0.45) continue;
+    const cy = (c.minY + c.maxY) / 2;
+    if (cy < y1 - 0.3 * rh || cy > y1 + 0.12 * rh) continue;
+    const cx = (c.minX + c.maxX) / 2 - slant * cy; // de-slanted, like the digit boxes
+    for (let k = 0; k < sorted.length - 1; k++) {
+      const a = sorted[k].box;
+      const b = sorted[k + 1].box;
+      // between the centres of two neighbouring digits, in the lower right of the first
+      const ca = (a.x0 + a.x1) / 2;
+      const cb = (b.x0 + b.x1) / 2;
+      if (cx > ca + 0.25 * (a.x1 - a.x0) && cx < cb - 0.1 * (b.x1 - b.x0)) {
+        const score = Math.abs(cy - (y1 - t / 2));
+        if (!best || score < best.score) best = { score, k };
+      }
+    }
+  }
+  return { decimals: best ? sorted.length - 1 - best.k : 0 };
+}
+
+/**
  * Read all seven-segment numbers in an image.
  * @param {{width:number,height:number,data:Uint8ClampedArray}} img
  * @param {{maxDim?:number, crop?:{x:number,y:number,w:number,h:number}}} [opts]
  *   crop is in source pixel units (optional region of interest)
- * @returns {{rows: Array<{text:string,value:number|null,confidence:number,height:number,box:object}>, slant:number}}
+ *   invert: read bright segments on a dark background (LED / backlit displays)
+ * @returns {{rows: Array<{text:string,value:number|null,number:number|null,decimals:number,confidence:number,height:number,box:object}>, slant:number}}
+ *   value = digits as an integer, number = value with the detected decimal point
  */
 export function readSevenSegment(img, opts = {}) {
   const src = opts.crop ? cropImage(img, opts.crop) : img;
   const { gray, w, h, scale } = toGray(src, opts.maxDim ?? 900);
+  // LED / backlit displays: bright segments on a dark background
+  if (opts.invert) for (let i = 0; i < gray.length; i++) gray[i] = 255 - gray[i];
   const win = Math.round(Math.max(w, h) / 10);
   const mask = adaptiveThreshold(gray, w, h, win, opts.threshold ?? 0.18);
   const comps = connectedComponents(mask, w, h);
-  const segs = segmentCandidates(comps, w, h);
+  const segs = segmentCandidates(comps, w, h, !!opts.crop, !!opts.far);
 
-  // slant: median dx/dy of tall vertical segments
-  const verticals = segs.filter((sg) => sg.vertical && !sg.joined && sg.maxY - sg.minY > 3 * sg.thickness);
-  let slant = median(verticals.map((v) => v.slope));
-  if (!Number.isFinite(slant) || Math.abs(slant) > 0.4) slant = 0;
+  const slant = estimateSlant(segs, w);
   shearBoxes(segs, w, slant);
 
   const digits = groupDigits(segs);
@@ -436,9 +522,15 @@ export function readSevenSegment(img, opts = {}) {
   const segPixels = new Set();
   for (const d of digits) for (const m of d.members) for (const p of m.pixels) segPixels.add(p);
 
+  const used = new Set();
+  for (const d of digits) for (const m of d.members) used.add(m.id);
+  // size is checked against the stroke width in findDecimal
+  const dotCands = comps.filter((c) => !used.has(c.id) && c.pixels.length >= 3 && c.pixels.length < 20000);
+
   const decoded = rows
-    .map((r) => decodeRow(r, w, slant, segPixels))
+    .map((r) => ({ ...decodeRow(r, w, slant, segPixels), ...findDecimal(r, dotCands, w, slant) }))
     .filter((r) => r.digits.length >= 1)
+    .map((r) => ({ ...r, number: Number.isFinite(r.value) ? r.value / 10 ** r.decimals : null }))
     .map((r) => ({
       ...r,
       // boxes were computed in de-slanted space (x' = x - slant*y): map back to

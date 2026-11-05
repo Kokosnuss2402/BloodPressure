@@ -67,7 +67,8 @@ function stackBox(stack) {
  * Read a measurement device display.
  * @param {ImageData|{width:number,height:number,data:Uint8ClampedArray}} img
  * @param {'bp'|'glucose'} kind
- * @param {{crop?:{x:number,y:number,w:number,h:number}}} [opts]
+ * @param {{crop?:{x:number,y:number,w:number,h:number}, settings?:object}} [opts]
+ *   settings: user units (glucoseUnit, weightUnit) used to interpret the digits
  * @returns {{values: object, score: number, confidence: number, rows: Array, box: object|null, rotation: number}}
  */
 export function readDisplay(img, kind = 'bp', opts = {}) {
@@ -76,8 +77,15 @@ export function readDisplay(img, kind = 'bp', opts = {}) {
   // factor: how much `image` was downscaled; boxes are reported in full-resolution units
   const attempt = (image, rotation, readOpts, factor = 1) => {
     const { rows } = readSevenSegment(image, readOpts);
-    const stack = pickDisplayStack(rows).map((r) => ({ ...r, box: scaleBox(r.box, factor), height: r.height * factor }));
-    const mapped = type.fromDisplayRows(stack);
+    // multi-value displays (blood pressure): the stacked rows; single-value: every candidate row
+    const picked = type.fields.length > 1 ? pickDisplayStack(rows) : rows.filter((r) => r.value !== null);
+    const stack = picked.map((r) => ({ ...r, box: scaleBox(r.box, factor), height: r.height * factor }));
+    const mapped = type.fromDisplayRows(stack, opts.settings);
+    if (type.fields.length === 1 && mapped.values && stack.length) {
+      // keep only the row that was used, for the overlay and the zoom pass
+      const used = stack.filter((r) => r === mapped.row);
+      if (used.length) stack.splice(0, stack.length, ...used);
+    }
     passes.push({ ...mapped, rows: stack, rotation, box: stack.length ? stackBox(stack) : null, readOpts });
     return passes[passes.length - 1];
   };
@@ -88,14 +96,31 @@ export function readDisplay(img, kind = 'bp', opts = {}) {
     attempt(img, 0, { ...base, threshold });
     if (good()) break;
   }
+  // display far away (small in the frame): read at higher resolution
+  if (!good() || type.farDisplay) {
+    for (const threshold of [0.18, 0.12]) {
+      attempt(img, 0, { ...base, threshold, maxDim: 2400, far: true });
+      if (good()) break;
+    }
+  }
+  // LED / backlit displays: bright digits on a dark background
+  if (!good()) {
+    for (const maxDim of [900, 1800]) {
+      for (const threshold of [0.18, 0.12]) {
+        attempt(img, 0, { ...base, threshold, maxDim, invert: true });
+        if (good()) break;
+      }
+      if (good()) break;
+    }
+  }
   if (!good()) {
     const small = downscale(img, 1000);
     const c = opts.crop;
     const crop = c && { x: c.x / small.factor, y: c.y / small.factor, w: c.w / small.factor, h: c.h / small.factor };
     for (const rot of [-6, 6, -10, 10]) {
       const r = rotateImage(small.image, rot);
-      for (const threshold of [0.18, 0.12]) {
-        attempt(r, rot, { crop, threshold }, small.factor);
+      for (const [threshold, invert] of [[0.18, false], [0.12, false], [0.18, true]]) {
+        attempt(r, rot, { crop, threshold, invert }, small.factor);
         if (good()) break;
       }
       if (good()) break;
@@ -109,7 +134,7 @@ export function readDisplay(img, kind = 'bp', opts = {}) {
   if (best?.box) {
     const b = best.box;
     const mw = (b.x1 - b.x0) * 0.35;
-    const mh = (b.y1 - b.y0) * 0.15;
+    const mh = (b.y1 - b.y0) * (best.rows.length > 1 ? 0.15 : 0.4);
     const crop = { x: b.x0 - mw, y: b.y0 - mh, w: b.x1 - b.x0 + 2 * mw, h: b.y1 - b.y0 + 2 * mh };
     crop.x = Math.max(0, crop.x);
     crop.y = Math.max(0, crop.y);
@@ -118,7 +143,7 @@ export function readDisplay(img, kind = 'bp', opts = {}) {
     crop.h = Math.min(srcImg.height - crop.y, crop.h);
     // zoom only helps when the display is small in the frame
     if (crop.w < srcImg.width * 0.75 || crop.h < srcImg.height * 0.75) {
-      const z = attempt(srcImg, best.rotation, { crop, threshold: best.readOpts.threshold });
+      const z = attempt(srcImg, best.rotation, { crop, threshold: best.readOpts.threshold, invert: best.readOpts.invert });
       // the zoomed read sees the digits at higher resolution, prefer it when as plausible
       if (z.score >= best.score - 0.05) best = z;
     }
@@ -126,5 +151,6 @@ export function readDisplay(img, kind = 'bp', opts = {}) {
 
   if (!best) return { values: {}, score: 0, confidence: 0, rows: [], box: null, rotation: 0 };
   const { readOpts, ...result } = best;
+  if (opts.debug) result.passes = passes.map((p) => ({ score: p.score, values: p.values, rows: p.rows.map((r) => r.text), opts: { ...p.readOpts, crop: p.readOpts.crop && 'crop' }, rotation: p.rotation, box: p.box, crop: p.readOpts.crop }));
   return result;
 }

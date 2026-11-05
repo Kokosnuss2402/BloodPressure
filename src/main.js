@@ -12,7 +12,7 @@ import {
   listAllRecords,
   newId,
 } from './db.js';
-import { MEASUREMENT_TYPES, GLUCOSE_CONTEXTS, DEFAULT_TAGS, formatGlucose, toMgdl, MGDL_PER_MMOL } from './types.js';
+import { MEASUREMENT_TYPES, TYPE_LIST, GLUCOSE_CONTEXTS, DEFAULT_TAGS, formatGlucose, formatWeight, toMgdl, MGDL_PER_MMOL, LB_PER_KG, bmiOf } from './types.js';
 import { toCSV, localDate } from './csv.js';
 import { averages, byTimeOfDay, inLastDays, trend, allTags } from './stats.js';
 import { renderChart, markerSVG } from './chart.js';
@@ -95,7 +95,10 @@ const state = {
   measurements: [],
   settings: {
     glucoseUnit: 'mg/dL',
-    keepPhotos: true,
+    weightUnit: 'kg',
+    heightCm: null,
+    textSize: 'normal',
+    keepPhotos: false,
     theme: 'system',
     tags: DEFAULT_TAGS,
     csvDelimiter: ',',
@@ -113,9 +116,10 @@ async function loadSettings() {
 async function updateSetting(k, v) {
   state.settings[k] = v;
   await setSetting(k, v);
-  if (k === 'theme') applyTheme();
+  if (k === 'theme' || k === 'textSize') applyTheme();
 }
 function applyTheme() {
+  document.documentElement.dataset.textSize = state.settings.textSize;
   const t = state.settings.theme;
   if (t === 'system') document.documentElement.removeAttribute('data-theme');
   else document.documentElement.setAttribute('data-theme', t);
@@ -188,8 +192,14 @@ function renderOverview(root) {
     h(
       'div',
       { class: 'quick-actions' },
-      h('a', { class: 'btn big primary', href: '#/add?type=bp&camera=1' }, h('span', { class: 'ico', 'aria-hidden': 'true' }, '📷'), 'Blood pressure'),
-      h('a', { class: 'btn big', href: '#/add?type=glucose&camera=1' }, h('span', { class: 'ico', 'aria-hidden': 'true' }, '📷'), 'Blood sugar'),
+      TYPE_LIST.map((t, i) =>
+        h(
+          'a',
+          { class: `btn big ${i === 0 ? 'primary' : ''}`, href: `#/add?type=${t.id}&camera=1`, 'aria-label': `New ${t.label.toLowerCase()} measurement` },
+          h('span', { class: 'ico', 'aria-hidden': 'true' }, '📷'),
+          t.tabLabel ?? t.label,
+        ),
+      ),
     ),
   );
 
@@ -200,7 +210,7 @@ function renderOverview(root) {
         { class: 'card empty' },
         h('div', { class: 'ico', 'aria-hidden': 'true' }, '🩺'),
         h('h2', {}, 'No measurements yet'),
-        h('p', {}, 'Take a photo of your blood pressure monitor or glucose meter. The numbers are read right here in your browser – you check them before saving.'),
+        h('p', {}, 'Take a photo of your blood pressure monitor, glucose meter or scale. The numbers are read right here in your browser – you check them before saving.'),
       ),
     );
     return;
@@ -209,7 +219,7 @@ function renderOverview(root) {
   if (bp.length) {
     const last = bp[0];
     const t = MEASUREMENT_TYPES.bp;
-    const lvl = t.classify(last.values);
+    const lvl = t.classify(last.values, state.settings);
     const week = inLastDays(bp, 7);
     const avg = averages(week, t);
     const dSys = trend(bp, 'sys');
@@ -242,7 +252,7 @@ function renderOverview(root) {
       h(
         'div',
         { class: 'card' },
-        h('div', { class: 'card-head' }, h('h2', {}, '7-day average'), h('span', { class: 'muted small' }, `${avg.count} readings · ▲▼ vs. prior week`)),
+        h('div', { class: 'card-head' }, h('h2', {}, '7-day average'), h('span', { class: 'muted small' }, `${avg.count} readings · ▲▼ vs. last week`)),
         h(
           'div',
           { class: 'grid-2', style: { gridTemplateColumns: 'repeat(3, 1fr)' } },
@@ -278,14 +288,52 @@ function renderOverview(root) {
           { href: `#/edit/${last.id}`, style: { textDecoration: 'none', color: 'inherit' } },
           h('div', { class: 'reading' }, h('div', { class: 'big' }, formatGlucose(last.values.glucose, unit), h('small', {}, unit)), ctx ? h('div', { class: 'side' }, h('small', {}, ctx.label)) : null),
         ),
-        h('div', { class: 'row', style: { marginTop: '10px' } }, levelPill(t.classify(last.values)), h('span', { class: 'muted small' }, `7-day avg ${formatGlucose(avg.glucose, unit)} ${unit} · ${avg.count} readings`)),
+        h('div', { class: 'row', style: { marginTop: '10px' } }, levelPill(t.classify(last.values, state.settings)), h('span', { class: 'muted small' }, `7-day avg ${formatGlucose(avg.glucose, unit)} ${unit} · ${avg.count} readings`)),
       ),
     );
   }
 
+  const wt = state.measurements.filter((m) => m.type === 'weight');
+  if (wt.length) root.append(weightCard(wt));
+
   root.append(
-    h('p', { class: 'muted small', style: { textAlign: 'center' } }, 'Categories follow ESH 2023 (blood pressure) and ADA (glucose) thresholds. For information only – not a diagnosis.'),
+    h('p', { class: 'muted small', style: { textAlign: 'center' } }, 'Categories follow ESH 2023 (blood pressure), ADA (glucose) and WHO BMI thresholds. For information only – not a diagnosis.'),
   );
+}
+
+function weightCard(wt) {
+  const st = state.settings;
+  const unit = st.weightUnit;
+  const t = MEASUREMENT_TYPES.weight;
+  const last = wt[0];
+  // change vs. the reading closest to 30 days ago
+  const ref = wt.find((m) => Date.now() - new Date(m.timestamp).getTime() >= 30 * 86400000) ?? wt[wt.length - 1];
+  const delta = ref && ref !== last ? last.values.weight - ref.values.weight : NaN;
+  const sign = (d) => (d > 0 ? '▲ +' : d < 0 ? '▼ −' : '±');
+  const deltaTxt = Number.isFinite(delta)
+    ? `${sign(Math.round(delta * 10))}${formatWeight(Math.abs(delta), unit)} ${unit} since ${new Date(ref.timestamp).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}`
+    : '';
+  const chartBox = h('div');
+  const card = h(
+    'div',
+    { class: 'card' },
+    h('div', { class: 'card-head' }, h('h2', {}, 'Latest weight'), h('span', { class: 'muted small' }, timeAgo(new Date(last.timestamp)))),
+    h(
+      'a',
+      { href: `#/edit/${last.id}`, style: { textDecoration: 'none', color: 'inherit' } },
+      h('div', { class: 'reading' }, h('div', { class: 'big' }, formatWeight(last.values.weight, unit), h('small', {}, unit))),
+    ),
+    h(
+      'div',
+      { class: 'row', style: { marginTop: '10px' } },
+      levelPill(t.classify(last.values, st)),
+      deltaTxt ? h('span', { class: 'muted small' }, deltaTxt) : null,
+      !st.heightCm ? h('a', { class: 'small', href: '#/settings' }, 'Add your height for BMI') : null,
+    ),
+    wt.length > 1 ? chartBox : null,
+  );
+  if (wt.length > 1) queueMicrotask(() => renderChart(chartBox, weightChartConfig(inLastDays(wt, 90), null, 150)));
+  return card;
 }
 
 // ---------------------------------------------------------------- chart configs
@@ -371,10 +419,37 @@ function glucoseChartConfig(list, domain) {
   };
 }
 
+function weightChartConfig(list, domain, height = 220) {
+  const unit = state.settings.weightUnit;
+  const conv = (kg) => (unit === 'lb' ? kg * LB_PER_KG : kg);
+  const points = list.map((m) => ({ t: new Date(m.timestamp).getTime(), v: conv(m.values.weight), ref: m }));
+  const h0 = state.settings.heightCm;
+  // reference lines at the BMI 18.5 / 25 limits when the height is known
+  const refLines = Number.isFinite(h0)
+    ? [
+        { v: conv(25 * (h0 / 100) ** 2), label: 'BMI 25' },
+        { v: conv(18.5 * (h0 / 100) ** 2), label: 'BMI 18.5' },
+      ].filter((r) => points.some((p) => Math.abs(p.v - r.v) < 15))
+    : [];
+  return {
+    height,
+    domain: domain ?? undefined,
+    formatValue: (v) => (Math.abs(v) < 100 ? v.toFixed(1).replace(/\.0$/, '') : String(Math.round(v))),
+    series: [{ key: 'weight', label: 'Weight', cls: 's-weight', shape: 'circle', points }],
+    refLines,
+    tooltip: (t, rows) => {
+      const m = rows[0]?.point.ref;
+      const bmi = bmiOf(m.values.weight, h0);
+      return tipHeader(t) + tipRow('s-weight', 'circle', '', `${formatWeight(m.values.weight, unit)} ${unit}`) + (Number.isFinite(bmi) ? `<div class="muted">BMI ${bmi.toFixed(1)}</div>` : '');
+    },
+    onSelect: (m) => (location.hash = `#/edit/${m.id}`),
+  };
+}
+
 // ---------------------------------------------------------------- history
 
 function filterBar(filter, onChange, { allowAll = true } = {}) {
-  const typeBtns = [...(allowAll ? [['all', 'All']] : []), ['bp', 'Blood pressure'], ['glucose', 'Blood sugar']];
+  const typeBtns = [...(allowAll ? [['all', 'All']] : []), ...TYPE_LIST.map((t) => [t.id, t.tabLabel ?? t.label])];
   const periods = [
     [7, '7 days'],
     [30, '30 days'],
@@ -420,7 +495,9 @@ function entryRow(m) {
   const t = MEASUREMENT_TYPES[m.type];
   const unit = state.settings.glucoseUnit;
   let vals;
-  if (m.type === 'bp') {
+  if (m.type === 'weight') {
+    vals = h('div', { class: 'vals' }, `${formatWeight(m.values.weight, state.settings.weightUnit)} `, h('small', {}, state.settings.weightUnit));
+  } else if (m.type === 'bp') {
     vals = h('div', { class: 'vals' }, `${m.values.sys}/${m.values.dia} `, h('small', {}, 'mmHg'), Number.isFinite(m.values.pulse) ? h('small', {}, `  ♥ ${m.values.pulse}`) : null);
   } else {
     vals = h('div', { class: 'vals' }, `${formatGlucose(m.values.glucose, unit)} `, h('small', {}, unit));
@@ -431,8 +508,7 @@ function entryRow(m) {
     'button',
     { class: 'entry', onclick: () => (location.hash = `#/edit/${m.id}`) },
     h('div', { class: 'time' }, fmtTime(d)),
-    h('div', {}, vals, h('div', { class: 'meta' }, meta)),
-    levelPill(t.classify(m.values)),
+    h('div', { class: 'entry-main' }, h('div', { class: 'entry-top' }, vals, levelPill(t.classify(m.values, state.settings))), h('div', { class: 'meta' }, meta)),
   );
 }
 
@@ -476,7 +552,7 @@ function renderHistory(root) {
 }
 
 function exportCSV(list) {
-  const csv = toCSV(list, { delimiter: state.settings.csvDelimiter });
+  const csv = toCSV(list, { delimiter: state.settings.csvDelimiter, settings: state.settings });
   download(`vitals-${localDate(new Date())}.csv`, csv, 'text/csv;charset=utf-8');
 }
 
@@ -513,8 +589,13 @@ function renderCharts(root) {
       renderChart(c2, pulseChartConfig(list, domain));
     } else {
       const c1 = h('div');
-      root.append(h('div', { class: 'card' }, h('h2', {}, `Blood sugar (${state.settings.glucoseUnit})`), c1));
-      renderChart(c1, glucoseChartConfig(list, domain));
+      if (f.type === 'weight') {
+        root.append(h('div', { class: 'card' }, h('h2', {}, `Weight (${state.settings.weightUnit})`), c1));
+        renderChart(c1, weightChartConfig(list, domain));
+      } else {
+        root.append(h('div', { class: 'card' }, h('h2', {}, `Blood sugar (${state.settings.glucoseUnit})`), c1));
+        renderChart(c1, glucoseChartConfig(list, domain));
+      }
     }
 
     if (!list.length) return;
@@ -526,7 +607,8 @@ function renderCharts(root) {
 
 function statsCard(list, type) {
   const unit = state.settings.glucoseUnit;
-  const fmt = (key, v) => (key === 'glucose' ? formatGlucose(v, unit) : r0(v));
+  const fieldOf = (key) => type.fields.find((f) => f.key === key);
+  const fmt = (key, v) => (Number.isFinite(v) ? fieldOf(key).toDisplay(v, state.settings) : '–');
   const { morning, evening } = byTimeOfDay(list);
   const groups = [
     ['All', list],
@@ -561,13 +643,14 @@ function statsCard(list, type) {
 function distributionCard(list, type) {
   const counts = new Map();
   for (const m of list) {
-    const l = type.classify(m.values);
+    const l = type.classify(m.values, state.settings);
     if (!l) continue;
     const c = counts.get(l.id) ?? { level: l, n: 0 };
     c.n++;
     counts.set(l.id, c);
   }
   const rows = [...counts.values()].sort((a, b) => a.level.rank - b.level.rank);
+  if (!rows.length) return h('span');
   const max = Math.max(...rows.map((r) => r.n));
   return h(
     'div',
@@ -626,7 +709,7 @@ function readInWorker(image, kind, crop) {
       e.data.ok ? resolve(e.data) : reject(new Error(e.data.error));
     };
     worker.addEventListener('message', onMsg);
-    worker.postMessage({ id, image, kind, crop });
+    worker.postMessage({ id, image, kind, crop, settings: { glucoseUnit: state.settings.glucoseUnit, weightUnit: state.settings.weightUnit } });
   });
 }
 
@@ -662,7 +745,7 @@ async function renderEditor(root, { arg, params }) {
   }
   const unit = state.settings.glucoseUnit;
   const s = {
-    type: editing?.type ?? (params.get('type') === 'glucose' ? 'glucose' : 'bp'),
+    type: editing?.type ?? (MEASUREMENT_TYPES[params.get('type')] ? params.get('type') : 'bp'),
     values: { ...(editing?.values ?? {}) },
     fromPhoto: new Set(),
     ocrRaw: editing?.ocr?.raw ?? null,
@@ -677,7 +760,7 @@ async function renderEditor(root, { arg, params }) {
     busy: false,
     status: null,
   };
-  if (s.type === 'glucose' && !s.values.context) s.values.context = 'fasting';
+  if (!editing) Object.assign(s.values, MEASUREMENT_TYPES[s.type].defaults?.() ?? {});
 
   const fileCam = h('input', { type: 'file', accept: 'image/*', capture: 'environment', class: 'visually-hidden', 'aria-hidden': 'true', tabindex: '-1' });
   const fileGal = h('input', { type: 'file', accept: 'image/*', class: 'visually-hidden', 'aria-hidden': 'true', tabindex: '-1' });
@@ -701,21 +784,21 @@ async function renderEditor(root, { arg, params }) {
       : h(
           'div',
           { class: 'segmented', role: 'group', 'aria-label': 'Measurement type', style: { marginBottom: '14px' } },
-          ['bp', 'glucose'].map((t) =>
+          TYPE_LIST.map(({ id: t }) =>
             h(
               'button',
               {
                 'aria-pressed': String(s.type === t),
                 onclick: (e) => {
                   s.type = t;
-                  s.values = t === 'glucose' ? { context: 'fasting' } : {};
+                  s.values = { ...(MEASUREMENT_TYPES[t].defaults?.() ?? {}) };
                   s.fromPhoto.clear();
-                  e.currentTarget.parentElement.querySelectorAll('button').forEach((b, i) => b.setAttribute('aria-pressed', String(['bp', 'glucose'][i] === t)));
+                  e.currentTarget.parentElement.querySelectorAll('button').forEach((b, i) => b.setAttribute('aria-pressed', String(TYPE_LIST[i].id === t)));
                   if (s.photoCanvas) runOCR();
                   drawForm();
                 },
               },
-              MEASUREMENT_TYPES[t].label,
+              MEASUREMENT_TYPES[t].tabLabel ?? MEASUREMENT_TYPES[t].label,
             ),
           ),
         ),
@@ -730,13 +813,14 @@ async function renderEditor(root, { arg, params }) {
     s.status = { busy: true, text: 'Loading photo…' };
     drawPhoto();
     const img = await loadImage(file);
-    s.photoCanvas = drawScaled(img, 1600);
+    // scales are photographed from further away: keep more pixels for the small display
+    s.photoCanvas = drawScaled(img, MEASUREMENT_TYPES[s.type].farDisplay ? 2400 : 1600);
     if (state.settings.keepPhotos) s.photoBlob = await canvasToBlob(drawScaled(img, 1024));
     // photos picked from the gallery keep their own capture time
     if (!editing && file.lastModified && Date.now() - file.lastModified > 5 * 60000) s.when = new Date(file.lastModified);
     s.crop = null;
     await runOCR();
-    if (!s.values.sys && !s.values.glucose && state.settings.claudeAuto && state.settings.claudeKey) await runClaude();
+    if (!s.fromPhoto.size && state.settings.claudeAuto && state.settings.claudeKey) await runClaude();
   }
 
   async function runOCR() {
@@ -748,14 +832,10 @@ async function renderEditor(root, { arg, params }) {
     try {
       const { result, ms } = await readInWorker(image, s.type, s.crop);
       s.overlay = result;
-      // mmol/L meters show one decimal ("5.6"); the decimal point is not read, so 56 -> 5.6 mmol/L
-      if (s.type === 'glucose' && unit === 'mmol/L' && Number.isFinite(result.values.glucose)) {
-        result.values.glucose = toMgdl(result.values.glucose / 10, 'mmol/L');
-      }
       s.ocrRaw = { ...result.values, engine: 'on-device', score: result.score };
       applyRecognized(result.values);
       const n = Object.keys(result.values).length;
-      const need = s.type === 'bp' ? 3 : 1;
+      const need = MEASUREMENT_TYPES[s.type].fields.length;
       if (n >= need) s.status = { ok: true, text: `Read on your device in ${ms} ms – please check the values below.` };
       else if (n) s.status = { warn: true, text: 'Only part of the display could be read. Check and complete the values, or drag a box around the numbers.' };
       else s.status = { warn: true, text: 'Could not read the display. Drag a box around the numbers to retry, or type them in.' };
@@ -778,6 +858,9 @@ async function renderEditor(root, { arg, params }) {
       if (s.type === 'glucose') {
         const u = values.glucoseUnit ?? (values.glucoseDisplayed < 35 ? 'mmol/L' : 'mg/dL');
         v = Number.isFinite(values.glucoseDisplayed) ? { glucose: toMgdl(values.glucoseDisplayed, u) } : {};
+      } else if (s.type === 'weight') {
+        const u = values.weightUnit ?? state.settings.weightUnit;
+        v = Number.isFinite(values.weightDisplayed) ? { weight: Math.round((u === 'lb' ? values.weightDisplayed / LB_PER_KG : values.weightDisplayed) * 10) / 10 } : {};
       }
       s.ocrRaw = { ...v, engine: 'claude' };
       s.overlay = null;
@@ -875,7 +958,7 @@ async function renderEditor(root, { arg, params }) {
       ctx.fillRect(x + w, y, c.width - x - w, hh);
     }
     if (s.overlay?.rows?.length && !s.overlay.rotation) {
-      const labels = s.type === 'bp' ? ['SYS', 'DIA', 'PUL'] : ['GLU'];
+      const labels = MEASUREMENT_TYPES[s.type].fields.map((f) => f.short);
       const fontPx = Math.round(Math.max(14, c.width / 28));
       ctx.font = `700 ${fontPx}px system-ui, sans-serif`;
       s.overlay.rows.forEach((r, i) => {
@@ -931,24 +1014,24 @@ async function renderEditor(root, { arg, params }) {
   function drawForm() {
     formArea.replaceChildren();
     const type = MEASUREMENT_TYPES[s.type];
-    const valueInputs = h('div', { class: `value-inputs ${s.type === 'glucose' ? 'one' : ''}` });
+    const st = state.settings;
+    const valueInputs = h('div', { class: `value-inputs ${type.fields.length === 1 ? 'one' : ''}` });
     for (const f of type.fields) {
-      const isGlu = f.key === 'glucose';
-      const shown = isGlu ? (Number.isFinite(s.values.glucose) ? formatGlucose(s.values.glucose, unit) : '') : (s.values[f.key] ?? '');
+      const dec = f.decimalInput(st);
       const input = h('input', {
         id: `in-${f.key}`,
         type: 'text',
-        inputmode: isGlu && unit === 'mmol/L' ? 'decimal' : 'numeric',
-        pattern: isGlu && unit === 'mmol/L' ? '[0-9]+([.,][0-9])?' : '[0-9]*',
+        inputmode: dec ? 'decimal' : 'numeric',
+        pattern: dec ? '[0-9]+([.,][0-9])?' : '[0-9]*',
         autocomplete: 'off',
-        value: shown,
+        value: f.toDisplay(s.values[f.key], st),
         placeholder: '–',
-        'aria-label': `${f.label} in ${isGlu ? unit : f.unit}`,
+        'aria-label': `${f.label} in ${f.unit(st)}`,
       });
       input.addEventListener('input', () => {
         const raw = input.value.replace(',', '.').trim();
         const n = raw === '' ? undefined : Number(raw);
-        s.values[f.key] = isGlu && Number.isFinite(n) ? toMgdl(n, unit) : Number.isFinite(n) ? Math.round(n) : undefined;
+        s.values[f.key] = Number.isFinite(n) ? f.fromInput(n, st) : undefined;
         s.fromPhoto.delete(f.key);
         const box = input.closest('.value-input');
         box.classList.remove('from-photo');
@@ -961,8 +1044,8 @@ async function renderEditor(root, { arg, params }) {
           { class: `value-input ${s.fromPhoto.has(f.key) ? 'from-photo' : ''}` },
           h('label', { for: `in-${f.key}` }, f.short),
           input,
-          h('div', { class: 'unit' }, isGlu ? unit : f.unit),
-          s.fromPhoto.has(f.key) ? h('div', { class: 'from-photo-tag' }, '◉ from photo') : null,
+          h('div', { class: 'unit' }, f.unit(st)),
+          s.fromPhoto.has(f.key) ? h('div', { class: 'from-photo-tag', title: 'Read from the photo' }, '◉ photo') : null,
         ),
       );
     }
@@ -1083,7 +1166,7 @@ async function renderEditor(root, { arg, params }) {
     await saveMeasurement(rec, state.settings.keepPhotos ? s.photoBlob : null);
     await reload();
     afterChange();
-    toast(editing ? 'Changes saved' : `Saved: ${type.format(values, unit)}`);
+    toast(editing ? 'Changes saved' : `Saved: ${type.format(values, state.settings)}`);
     location.hash = editing ? '#/history' : '#/overview';
   }
 
@@ -1113,6 +1196,14 @@ async function renderEditor(root, { arg, params }) {
 
 async function renderSettings(root) {
   const st = state.settings;
+  const heightInput = () => {
+    const el = h('input', { type: 'text', inputmode: 'numeric', pattern: '[0-9]*', placeholder: 'cm', value: st.heightCm ?? '', 'aria-label': 'Height in cm', class: 'inline-input' });
+    el.addEventListener('change', () => {
+      const n = Number(el.value.replace(',', '.'));
+      updateSetting('heightCm', Number.isFinite(n) && n >= 50 && n <= 250 ? Math.round(n) : null);
+    });
+    return el;
+  };
   const sw = (key, onChange) => {
     const input = h('input', { type: 'checkbox', class: 'switch', checked: !!st[key], 'aria-label': key });
     input.addEventListener('change', async () => {
@@ -1134,6 +1225,9 @@ async function renderSettings(root) {
       'div',
       { class: 'card' },
       h('div', { class: 'setting' }, h('div', {}, 'Blood sugar unit'), select('glucoseUnit', [['mg/dL', 'mg/dL'], ['mmol/L', 'mmol/L']], 'Blood sugar unit')),
+      h('div', { class: 'setting' }, h('div', {}, 'Weight unit'), select('weightUnit', [['kg', 'kg'], ['lb', 'lb']], 'Weight unit')),
+      h('div', { class: 'setting' }, h('div', {}, 'Height', h('div', { class: 'desc' }, 'For BMI. Stays on this device unless backed up.')), heightInput()),
+      h('div', { class: 'setting' }, h('div', {}, 'Text size'), select('textSize', [['normal', 'Normal'], ['large', 'Large'], ['xlarge', 'Extra large']], 'Text size')),
       h('div', { class: 'setting' }, h('div', {}, 'Appearance'), select('theme', [['system', 'System'], ['light', 'Light'], ['dark', 'Dark']], 'Appearance')),
       h('div', { class: 'setting' }, h('div', {}, 'Keep photos', h('div', { class: 'desc' }, 'Stored only in this browser, never uploaded to the backup.')), sw('keepPhotos')),
     ),
@@ -1399,6 +1493,10 @@ async function renderSettings(root) {
 }
 
 // ---------------------------------------------------------------- boot
+
+// Safari ignores user-scalable=no: block pinch gestures explicitly (text size is a setting instead)
+document.addEventListener('gesturestart', (e) => e.preventDefault());
+document.addEventListener('touchmove', (e) => e.touches.length > 1 && e.preventDefault(), { passive: false });
 
 async function boot() {
   await loadSettings();

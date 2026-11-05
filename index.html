@@ -2,10 +2,16 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <!-- app-like: no pinch / double-tap zoom (text size can be changed in Settings instead) -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="Vitals" />
+    <meta name="format-detection" content="telephone=no" />
     <meta name="theme-color" content="#fcfcfb" media="(prefers-color-scheme: light)" />
     <meta name="theme-color" content="#1a1a19" media="(prefers-color-scheme: dark)" />
-    <meta name="description" content="Log blood pressure, pulse and blood sugar by taking a photo of your measuring device." />
+    <meta name="description" content="Log blood pressure, pulse, blood sugar and weight by taking a photo of your measuring device." />
     <link rel="manifest" href="manifest.webmanifest" />
     <link rel="icon" href="icon.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="icon-192.png" />
@@ -19,11 +25,11 @@
       </header>
       <main id="view" tabindex="-1"></main>
       <nav class="tabbar" aria-label="Main">
-        <a href="#/overview" data-tab="overview"><span class="ico" aria-hidden="true">◎</span><span>Overview</span></a>
-        <a href="#/history" data-tab="history"><span class="ico" aria-hidden="true">☰</span><span>History</span></a>
-        <a href="#/add" class="tab-add" data-tab="add" aria-label="New measurement"><span class="plus" aria-hidden="true">+</span></a>
-        <a href="#/charts" data-tab="charts"><span class="ico" aria-hidden="true">∿</span><span>Charts</span></a>
-        <a href="#/settings" data-tab="settings"><span class="ico" aria-hidden="true">⚙</span><span>Settings</span></a>
+        <a href="#/overview" data-tab="overview"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V20h14V9.5"/><path d="M10 20v-5h4v5"/></svg><span>Overview</span></a>
+        <a href="#/history" data-tab="history"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13M8 12h13M8 18h13"/><circle cx="3.5" cy="6" r="1"/><circle cx="3.5" cy="12" r="1"/><circle cx="3.5" cy="18" r="1"/></svg><span>History</span></a>
+        <a href="#/add" class="tab-add" data-tab="add" aria-label="New measurement"><span class="plus" aria-hidden="true"></span></a>
+        <a href="#/charts" data-tab="charts"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="m6 15 4-5 4 3 5-7"/></svg><span>Charts</span></a>
+        <a href="#/settings" data-tab="settings"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></svg><span>Settings</span></a>
       </nav>
       <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
     </div>

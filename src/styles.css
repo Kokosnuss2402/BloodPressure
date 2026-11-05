@@ -107,13 +107,58 @@
 * {
   box-sizing: border-box;
 }
+html {
+  font-size: 100%;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+  /* no double-tap zoom, no rubber-band scrolling of the whole page */
+  touch-action: manipulation;
+  overscroll-behavior: none;
+}
+html[data-text-size='large'] {
+  font-size: 112.5%;
+}
+html[data-text-size='xlarge'] {
+  font-size: 125%;
+}
 html,
 body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  font: 16px/1.45 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  font: 1rem/1.45 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
   -webkit-tap-highlight-color: transparent;
+}
+/* app-like: no text selection or long-press callouts on UI chrome */
+body {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+input,
+textarea,
+.selectable {
+  -webkit-user-select: text;
+  user-select: text;
+}
+img,
+svg,
+canvas {
+  -webkit-user-drag: none;
+}
+#view > * {
+  animation: view-in 0.18s ease-out;
+}
+@keyframes view-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  #view > * {
+    animation: none;
+  }
 }
 button,
 input,
@@ -194,8 +239,8 @@ main {
   padding: 6px 0;
 }
 .tabbar a .ico {
-  font-size: 1.2rem;
-  line-height: 1;
+  width: 24px;
+  height: 24px;
 }
 .tabbar a[aria-current='page'] {
   color: var(--accent);
@@ -205,17 +250,33 @@ main {
   justify-self: center;
 }
 .tabbar .tab-add .plus {
-  display: grid;
-  place-items: center;
+  position: relative;
+  display: block;
   width: 54px;
   height: 54px;
   margin-top: -22px;
   border-radius: 50%;
   background: var(--accent);
-  color: var(--accent-ink);
-  font-size: 2rem;
-  font-weight: 300;
   box-shadow: 0 6px 18px rgb(42 120 214 / 0.35);
+}
+/* the plus is drawn, not a font glyph, so it is exactly centred */
+.tabbar .tab-add .plus::before,
+.tabbar .tab-add .plus::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 22px;
+  height: 2.5px;
+  border-radius: 2px;
+  background: var(--accent-ink);
+  transform: translate(-50%, -50%);
+}
+.tabbar .tab-add .plus::after {
+  transform: translate(-50%, -50%) rotate(90deg);
+}
+.tabbar .tab-add:active .plus {
+  transform: scale(0.94);
 }
 
 /* ---------- cards & layout ---------- */
@@ -235,9 +296,10 @@ main {
 }
 .card-head {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   align-items: baseline;
-  gap: 8px;
+  gap: 2px 8px;
   margin-bottom: 10px;
 }
 .card-head h2 {
@@ -360,9 +422,13 @@ main {
 
 .quick-actions {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
   margin-bottom: 14px;
+}
+.quick-actions .btn.big {
+  padding: 10px 6px;
+  font-size: 0.95rem;
 }
 
 /* ---------- buttons & forms ---------- */
@@ -475,7 +541,7 @@ main {
 
 .value-inputs {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
 }
 .value-inputs.one {
@@ -500,6 +566,7 @@ main {
 }
 .value-input input {
   width: 100%;
+  min-width: 0;
   border: 0;
   background: transparent;
   font-size: 2rem;
@@ -625,7 +692,7 @@ main {
 }
 .entry {
   display: grid;
-  grid-template-columns: 52px 1fr auto;
+  grid-template-columns: auto minmax(0, 1fr);
   gap: 10px;
   align-items: center;
   width: 100%;
@@ -640,7 +707,16 @@ main {
 .entry .time {
   font-variant-numeric: tabular-nums;
   color: var(--text-2);
-  font-size: 0.9rem;
+  font-size: 0.85rem;
+  white-space: nowrap;
+  min-width: 3.4em;
+}
+.entry-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 8px;
+  flex-wrap: wrap;
 }
 .entry .vals {
   font-weight: 700;
@@ -735,6 +811,8 @@ main {
 .chart .s-pulse .line { stroke: var(--series-pulse); }
 .chart .s-pulse .marker { fill: var(--series-pulse); }
 .chart .s-glucose .line { stroke: var(--series-glucose); }
+.chart .s-weight .line { stroke: var(--series-sys); }
+.chart .s-weight .marker { fill: var(--series-sys); }
 .chart .s-glucose .marker { fill: var(--series-glucose); }
 .chart-tip {
   position: absolute;
@@ -785,6 +863,16 @@ main {
 .legend .s-dia .marker, .chart-tip .s-dia .marker { fill: var(--series-dia); }
 .legend .s-pulse .marker, .chart-tip .s-pulse .marker { fill: var(--series-pulse); }
 .legend .s-glucose .marker, .chart-tip .s-glucose .marker { fill: var(--series-glucose); }
+.legend .s-weight .marker, .chart-tip .s-weight .marker { fill: var(--series-sys); }
+.inline-input {
+  width: 84px;
+  min-height: 40px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  text-align: right;
+}
 
 .dist-row {
   display: grid;
@@ -925,6 +1013,21 @@ table.stats th {
   overflow: hidden;
   clip: rect(0 0 0 0);
   white-space: nowrap;
+}
+
+@media (max-width: 360px) {
+  .value-input {
+    padding: 8px 8px 10px;
+  }
+  .value-input input {
+    font-size: 1.7rem;
+  }
+  .reading .big {
+    font-size: 2.6rem;
+  }
+  .card {
+    padding: 14px;
+  }
 }
 
 @media (min-width: 640px) {

@@ -1,6 +1,6 @@
 # Vitals Log
 
-A mobile-friendly web app for keeping a log of your **blood pressure, pulse and blood sugar**.
+A mobile-friendly web app for keeping a log of your **blood pressure, pulse, blood sugar and weight**.
 Take a photo of your measuring device and the numbers are read **right in the browser**. Check
 the values, add tags, then save.
 
@@ -16,6 +16,8 @@ the values, add tags, then save.
   ADA). The colours are colour-blind safe (deuteranopia), and every series also has its own marker
   shape and label.
 - 🩸 **Blood sugar** in mg/dL or mmol/L, with fasting / before / after meal context.
+- ⚖️ **Weight** in kg or lb, read from a bathroom-scale photo taken from standing height (small, far-away
+  display, LCD or LED, decimal point detected). With your height set, BMI and its WHO category are shown.
 - ⬇ **CSV export** (comma or semicolon for European Excel), JSON backup and import.
 - ☁ **Cloud backup** to your own **Cloudflare D1** database. The browser database (IndexedDB) stays
   the main store. Two-way sync lets a second device restore your data, and deletions sync too.
@@ -26,6 +28,8 @@ the values, add tags, then save.
   The Worker refuses unencrypted records. The passphrase is never stored or uploaded: each device
   keeps only a non-exportable key. If you lose the passphrase, the backup can't be read.
 - ✨ Optional: let **Claude** read difficult displays with your own Anthropic API key (off by default).
+- 📱 Feels like an app: no pinch or double-tap zoom (there's an adjustable text size instead), no text
+  selection or long-press menus on controls. Photos are not kept unless you turn that on.
 - 📱 Installable PWA that **works fully offline**, including reading photos: measurements are saved on the
   device and synced to the backup automatically once you're back online. Light & dark mode.
 

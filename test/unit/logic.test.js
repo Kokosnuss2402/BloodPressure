@@ -62,7 +62,7 @@ test('CSV export escapes values and includes pulse and tags', () => {
   assert.match(lines[1], /,Blood pressure,108,71,101,/);
   assert.match(lines[1], /Morning; Left arm/);
   assert.match(lines[1], /"felt ""dizzy"", tired"/);
-  assert.match(lines[2], /,Blood sugar,,,,99,5\.5,Fasting,Normal,/);
+  assert.match(lines[2], /,Blood sugar,,,,99,5\.5,Fasting,,,,Normal,/);
   const semi = toCSV([{ id: '2', type: 'glucose', timestamp: '2026-11-05T08:00:00.000Z', values: { glucose: 99 } }], { delimiter: ';' });
   assert.match(semi, /;99;5,5;/); // decimal comma with semicolon separator
 });

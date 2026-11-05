@@ -64,6 +64,29 @@ try {
     });
   }
 
+  // ---------------- 1b. bathroom scale far away (decimal point, LED, perspective, lb)
+  const scales = [
+    { value: '72.4' },
+    { value: '105.8', floor: 'wood' },
+    { value: '58.0', displayH: 50 },
+    { value: '83.6', led: true },
+    { value: '64.9', led: true, floor: 'wood', displayH: 55 },
+    { value: '77.1', perspective: 0.3 },
+    { value: '159.6', unit: 'lb', expectKg: 72.4 },
+  ];
+  for (const [i, c] of scales.entries()) {
+    await check(`scale ${c.value} ${c.unit ?? 'kg'}${c.led ? ' LED' : ''}${c.floor === 'wood' ? ' wood floor' : ''}${c.displayH ? ` small (${c.displayH}px)` : ''}`, async () => {
+      const got = await page.evaluate(async ({ c, seed }) => {
+        const { syntheticScale } = await import('/test/synthetic-display.js');
+        const { readDisplay } = await import('/src/ocr/reader.js');
+        const cv = syntheticScale({ ...c, seed });
+        const img = cv.getContext('2d').getImageData(0, 0, cv.width, cv.height);
+        return readDisplay(img, 'weight', { settings: { weightUnit: c.unit ?? 'kg' } }).values;
+      }, { c, seed: i + 5 });
+      assert.deepEqual(got, { weight: c.expectKg ?? Number(c.value) });
+    });
+  }
+
   // ---------------- 2. real photos
   const photos = fs.existsSync(privateDir) ? fs.readdirSync(privateDir).filter((f) => /\.(jpe?g|png|webp)$/i.test(f)) : [];
   for (const f of photos) {
@@ -169,6 +192,23 @@ try {
     await app.locator('.chart .hit').first().dispatchEvent('pointermove', { clientX: box.x + box.width * 0.7, clientY: box.y + 60 });
     await app.waitForSelector('.chart-tip:not([hidden])');
     if (shots) await app.screenshot({ path: path.join(shots, '05-charts.png'), fullPage: true });
+  });
+
+  await check('e2e: weight from a far-away scale photo, saved and charted', async () => {
+    const b64 = await page.evaluate(async () => {
+      const { syntheticScale } = await import('/test/synthetic-display.js');
+      return syntheticScale({ value: '72.4', seed: 5 }).toDataURL('image/jpeg', 0.9).split(',')[1];
+    });
+    const scalePath = path.join(root, 'node_modules/.cache-scale.jpg');
+    fs.writeFileSync(scalePath, Buffer.from(b64, 'base64'));
+    await app.goto(base + '#/add?type=weight');
+    await app.locator('input[type=file][capture]').setInputFiles(scalePath);
+    await app.waitForFunction(() => document.querySelector('#in-weight')?.value !== '', null, { timeout: 20000 });
+    assert.equal(await app.inputValue('#in-weight'), '72.4');
+    if (shots) await app.screenshot({ path: path.join(shots, '08-weight-verify.png') });
+    await app.getByRole('button', { name: 'Save', exact: true }).click();
+    await app.waitForSelector('.reading .big');
+    assert.ok(await app.locator('.card', { hasText: 'Latest weight' }).count());
   });
 
   await check('e2e: CSV export contains pulse and tags', async () => {
