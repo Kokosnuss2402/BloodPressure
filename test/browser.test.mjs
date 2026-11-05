@@ -101,6 +101,25 @@ try {
 
   // ---------------- 2. real photos
   const photos = fs.existsSync(privateDir) ? fs.readdirSync(privateDir).filter((f) => /\.(jpe?g|png|webp)$/i.test(f)) : [];
+  // scale photos: scale-<anything>-<kg>.jpg, read like the app does (2400 px canvas)
+  for (const f of photos.filter((x) => /^scale-.*-(\d+(\.\d)?)\.\w+$/.test(x))) {
+    const kg = Number(f.match(/-(\d+(?:\.\d)?)\.\w+$/)[1]);
+    await check(`scale photo ${f}`, async () => {
+      const got = await page.evaluate(async (url) => {
+        const { readDisplay } = await import('/src/ocr/reader.js');
+        const img = new Image();
+        img.src = url;
+        await img.decode();
+        const s = Math.min(1, 2400 / Math.max(img.naturalWidth, img.naturalHeight));
+        const c = document.createElement('canvas');
+        c.width = Math.round(img.naturalWidth * s);
+        c.height = Math.round(img.naturalHeight * s);
+        c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+        return readDisplay(c.getContext('2d').getImageData(0, 0, c.width, c.height), 'weight', { settings: { weightUnit: 'kg' } }).values;
+      }, `/test/fixtures/private/${f}`);
+      assert.deepEqual(got, { weight: kg });
+    });
+  }
   for (const f of photos) {
     const m = f.match(/^(\d+)-(\d+)-(\d+)/);
     const expected = expectations[f] ?? (m ? { sys: +m[1], dia: +m[2], pulse: +m[3] } : null);

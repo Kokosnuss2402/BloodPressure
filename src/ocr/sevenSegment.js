@@ -150,6 +150,47 @@ function adaptiveThreshold(gray, w, h, win, t) {
   return mask;
 }
 
+/**
+ * Erase thin straight lines from the mask (LCD window frames, tile grout, table
+ * edges): pixels in a run at most `thin` px thick across and at least `long` px
+ * along. Such lines otherwise touch the digits and merge them into one big blob.
+ * Segments survive: they are thicker than `thin` or shorter than `long`.
+ */
+function removeThinLines(mask, w, h, thin, long) {
+  const hRun = new Uint16Array(w * h);
+  const vRun = new Uint16Array(w * h);
+  for (let y = 0; y < h; y++) {
+    let x = 0;
+    while (x < w) {
+      if (!mask[y * w + x]) {
+        x++;
+        continue;
+      }
+      let e = x;
+      while (e < w && mask[y * w + e]) e++;
+      for (let i = x; i < e; i++) hRun[y * w + i] = Math.min(65535, e - x);
+      x = e;
+    }
+  }
+  for (let x = 0; x < w; x++) {
+    let y = 0;
+    while (y < h) {
+      if (!mask[y * w + x]) {
+        y++;
+        continue;
+      }
+      let e = y;
+      while (e < h && mask[e * w + x]) e++;
+      for (let i = y; i < e; i++) vRun[i * w + x] = Math.min(65535, e - y);
+      y = e;
+    }
+  }
+  for (let i = 0; i < w * h; i++) {
+    if (!mask[i]) continue;
+    if ((vRun[i] <= thin && hRun[i] >= long) || (hRun[i] <= thin && vRun[i] >= long)) mask[i] = 0;
+  }
+}
+
 function connectedComponents(mask, w, h) {
   const labels = new Int32Array(w * h).fill(-1);
   const comps = [];
@@ -534,6 +575,7 @@ export function readSevenSegment(img, opts = {}) {
   if (opts.invert) for (let i = 0; i < gray.length; i++) gray[i] = 255 - gray[i];
   const win = Math.round(Math.max(w, h) / 10);
   const mask = adaptiveThreshold(gray, w, h, win, opts.threshold ?? 0.18);
+  removeThinLines(mask, w, h, 3, Math.max(20, Math.round(0.025 * Math.min(w, h))));
   const comps = connectedComponents(mask, w, h);
   const segs = segmentCandidates(comps, w, h, !!opts.crop, !!opts.far);
 

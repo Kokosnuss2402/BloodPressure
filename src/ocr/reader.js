@@ -106,7 +106,9 @@ export function readDisplay(img, kind = 'bp', opts = {}) {
     const { rows } = readSevenSegment(image, readOpts);
     // multi-value displays (blood pressure): the stacked rows; single-value: every candidate row
     const picked = type.fields.length > 1 ? pickDisplayStack(rows) : rows.filter((r) => r.value !== null);
-    const stack = picked.map((r) => ({ ...r, box: scaleBox(r.box, factor), height: r.height * factor }));
+    // rel: digit height relative to the photo (small patterns in floors and fabrics are tiny)
+    const longSide = Math.max(img.width, img.height);
+    const stack = picked.map((r) => ({ ...r, box: scaleBox(r.box, factor), height: r.height * factor, rel: (r.height * factor) / longSide }));
     const mapped = type.fromDisplayRows(stack, opts.settings);
     if (type.fields.length === 1 && mapped.values && stack.length) {
       // keep only the row that was used, for the overlay and the zoom pass
@@ -155,15 +157,20 @@ export function readDisplay(img, kind = 'bp', opts = {}) {
   }
 
   // photo sideways or upside down (e.g. EXIF orientation not applied): quarter turns
+  // Far-away displays (scales) need the full resolution here, and both sideways
+  // directions are tried: upside-down seven-segment digits often still look like
+  // digits (6/9, 2/2), so the more plausible reading (decimal point on the
+  // baseline, exactly decoded digits) decides.
   if (!good()) {
-    const small = downscale(img, 1000);
+    const src = type.farDisplay ? { image: img, factor: 1 } : downscale(img, 1000);
+    const extra = type.farDisplay ? { maxDim: 2400, far: true } : {};
     for (const k of [1, 3, 2]) {
-      const r = rotateQuarter(small.image, k);
+      const r = rotateQuarter(src.image, k);
       for (const threshold of [0.18, 0.12]) {
-        attempt(r, k * 90, { threshold }, small.factor, (im) => rotateQuarter(im, k));
-        if (good()) break;
+        attempt(r, k * 90, { threshold, quarter: k, ...extra }, src.factor, (im) => rotateQuarter(im, k));
+        if (passes[passes.length - 1].score >= 1) break;
       }
-      if (good()) break;
+      if (good() && k !== 1) break;
     }
   }
 
@@ -192,7 +199,7 @@ export function readDisplay(img, kind = 'bp', opts = {}) {
     crop.h = Math.min(srcImg.height - crop.y, crop.h);
     // zoom only helps when the display is small in the frame
     if (crop.w < srcImg.width * 0.75 || crop.h < srcImg.height * 0.75) {
-      const z = attempt(srcImg, best.rotation, { crop, threshold: best.readOpts.threshold, invert: best.readOpts.invert });
+      const z = attempt(srcImg, best.rotation, { crop, threshold: best.readOpts.threshold, invert: best.readOpts.invert, quarter: best.readOpts.quarter }, 1, best.transform);
       // The zoomed read sees the digits at higher resolution: prefer it when it is as
       // plausible for a complete reading, but only when strictly better for a partial
       // one (a partial zoom can pick a different row, e.g. pulse read as systolic).
@@ -202,6 +209,20 @@ export function readDisplay(img, kind = 'bp', opts = {}) {
 
   if (!best) return { values: {}, score: 0, confidence: 0, rows: [], box: null, rotation: 0 };
   const { readOpts, transform, ...result } = best;
+  // read on a quarter-turned copy: report the boxes in the photo's own orientation
+  if (readOpts.quarter) {
+    const k = readOpts.quarter;
+    const { width: w, height: h } = img;
+    const map = (b) => {
+      if (k === 1) return { x0: b.y0, x1: b.y1, y0: h - 1 - b.x1, y1: h - 1 - b.x0 };
+      if (k === 3) return { x0: w - 1 - b.y1, x1: w - 1 - b.y0, y0: b.x0, y1: b.x1 };
+      return { x0: w - 1 - b.x1, x1: w - 1 - b.x0, y0: h - 1 - b.y1, y1: h - 1 - b.y0 };
+    };
+    result.rows = result.rows.map((r) => ({ ...r, box: map(r.box) }));
+    if (result.box) result.box = map(result.box);
+    result.orientation = k * 90;
+    result.rotation = 0;
+  }
   if (opts.debug) result.passes = passes.map((p) => ({ score: p.score, values: p.values, rows: p.rows.map((r) => r.text), opts: { ...p.readOpts, crop: p.readOpts.crop && 'crop' }, rotation: p.rotation, box: p.box, crop: p.readOpts.crop }));
   delete result.transform;
   return result;

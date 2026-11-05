@@ -1059,7 +1059,9 @@ async function renderEditor(root, { arg, params }) {
         const pad = lw * 3;
         ctx.strokeStyle = '#3987e5';
         ctx.strokeRect(r.box.x0 - pad, r.box.y0 - pad, r.box.x1 - r.box.x0 + 2 * pad, r.box.y1 - r.box.y0 + 2 * pad);
-        const tag = `${labels[i] ?? ''} ${r.text}`.trim();
+        // show the number as on the display, with its decimal point
+        const shown = r.decimals > 0 && Number.isFinite(r.number) ? r.number.toFixed(r.decimals) : r.text;
+        const tag = `${labels[i] ?? ''} ${shown}`.trim();
         const tw = ctx.measureText(tag).width;
         const lx = Math.max(0, r.box.x0 - pad - tw - fontPx * 0.8);
         ctx.fillStyle = '#3987e5';

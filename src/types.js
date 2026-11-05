@@ -21,9 +21,19 @@ export const GLUCOSE_CONTEXTS = [
 const inRange = (v, f) => Number.isFinite(v) && v >= f.min && v <= f.max;
 const round1 = (v) => Math.round(v * 10) / 10;
 
-/** Single-number displays: the most confidently decoded row, then the largest digits. */
-const bestSingleRow = (rows) =>
-  [...rows].sort((a, b) => b.confidence - a.confidence || b.text.length - a.text.length || b.height - a.height)[0] ?? null;
+/**
+ * Plausibility of one row as the reading of a single-number display (scale,
+ * glucose meter): exactly decoded digits, at least three of them, and digits
+ * that are not tiny relative to the photo (texture in floors, towels and
+ * clothes produces small digit-like patterns). Rows without `rel` (unknown
+ * photo size) are not penalised for size.
+ */
+const singleRowScore = (r) =>
+  (0.6 + 0.4 * r.confidence) * (r.text.length >= 3 ? 1 : 0.85) * Math.min(1, (r.rel ?? 1) / 0.018);
+
+/** Single-number displays: the most plausible row. */
+const bestSingleRow = (rows, extra = () => 1) =>
+  [...rows].sort((a, b) => singleRowScore(b) * extra(b) - singleRowScore(a) * extra(a) || b.height - a.height)[0] ?? null;
 
 /** Plain integer field with a fixed unit (mmHg, /min). */
 const intField = (f) => ({
@@ -177,7 +187,7 @@ export const MEASUREMENT_TYPES = {
       };
       const r = bestSingleRow(rows.filter((x) => inRange(toMg(x), f)));
       if (!r) return { values: {}, score: 0, confidence: 0 };
-      return { values: { glucose: toMg(r) }, score: 0.6 + 0.4 * r.confidence, confidence: r.confidence, row: r };
+      return { values: { glucose: toMg(r) }, score: singleRowScore(r) / (r.text.length >= 3 ? 1 : 0.85), confidence: r.confidence, row: r };
     },
   },
 };
@@ -240,10 +250,14 @@ MEASUREMENT_TYPES.weight = {
       if (!(r.decimals > 0) && toKg(n, unit) > f.max) n /= 10;
       return toKg(n, unit);
     };
-    const r = bestSingleRow(rows.filter((x) => x.text.length >= 2 && inRange(toW(x), f)));
-    if (!r) return { values: {}, score: 0, confidence: 0 };
     // a decimal point found where one is expected makes the reading more trustworthy
-    const score = (0.6 + 0.4 * r.confidence) * (r.decimals > 0 ? 1 : 0.9);
+    const dec = (x) => (x.decimals > 0 ? 1 : 0.9);
+    // from a photo, accept 10 kg and up: smaller numbers are almost always texture
+    // misread as digits (typing a lower weight by hand is still allowed)
+    const ocrRange = { min: 10, max: f.max };
+    const r = bestSingleRow(rows.filter((x) => x.text.length >= 2 && inRange(toW(x), ocrRange)), dec);
+    if (!r) return { values: {}, score: 0, confidence: 0 };
+    const score = singleRowScore(r) * dec(r);
     return { values: { weight: toW(r) }, score, confidence: r.confidence, row: r };
   },
 };
