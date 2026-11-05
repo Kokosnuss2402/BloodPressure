@@ -145,6 +145,12 @@ try {
 
   await check('e2e: user corrects a value, adds tags and saves', async () => {
     await app.fill('#in-pulse', '72');
+    // the date field is a native input laid invisibly over a styled box
+    const box = await app.locator('.dt-wrap').boundingBox();
+    const card = await app.locator('.dt-wrap').locator('xpath=ancestor::div[contains(@class,"card")]').boundingBox();
+    assert.ok(box.x + box.width <= card.x + card.width, 'date box stays inside its card');
+    await app.fill('#in-when', '2026-11-04T07:45');
+    assert.match(await app.locator('.dt-text').innerText(), /7:45|07:45/);
     await app.getByRole('button', { name: 'Morning', exact: true }).click();
     const newTag = app.getByPlaceholder('+ New tag');
     await newTag.fill('Home office');

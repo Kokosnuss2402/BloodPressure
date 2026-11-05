@@ -1096,10 +1096,43 @@ async function renderEditor(root, { arg, params }) {
     };
     drawTags();
 
-    const when = h('input', { type: 'datetime-local', value: toLocalInput(s.when), max: toLocalInput(new Date(Date.now() + 60000)) });
-    when.addEventListener('change', () => {
-      if (when.value) s.when = new Date(when.value);
+    // The native date/time input is laid over a styled box and made invisible:
+    // iOS Safari sizes visible date inputs by their content and lets them overflow.
+    const fmtWhen = (d) => {
+      const narrow = window.innerWidth < 360;
+      const opts = { day: 'numeric', month: 'short' };
+      if (!narrow) opts.weekday = 'short';
+      if (d.getFullYear() !== new Date().getFullYear()) opts.year = 'numeric';
+      return `${d.toLocaleDateString(undefined, opts)} · ${fmtTime(d)}`;
+    };
+    const whenText = h('span', { class: 'dt-text' }, fmtWhen(s.when));
+    const whenInput = h('input', {
+      type: 'datetime-local',
+      class: 'dt-native',
+      id: 'in-when',
+      value: toLocalInput(s.when),
+      max: toLocalInput(new Date(Date.now() + 60000)),
+      'aria-label': 'Date and time of the measurement',
     });
+    whenInput.addEventListener('change', () => {
+      if (!whenInput.value) return;
+      s.when = new Date(whenInput.value);
+      whenText.textContent = fmtWhen(s.when);
+    });
+    // desktop browsers only open the picker from the calendar icon; open it on any click
+    whenInput.addEventListener('click', () => {
+      try {
+        whenInput.showPicker?.();
+      } catch {
+        /* not allowed / not supported: the native control still works */
+      }
+    });
+    const calIcon = h('span', {
+      class: 'dt-ico',
+      'aria-hidden': 'true',
+      html: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></svg>',
+    });
+    const when = h('div', { class: 'dt-wrap' }, whenText, calIcon, whenInput);
     const note = h('textarea', { placeholder: 'Optional note (symptoms, medication, …)', maxlength: '1000' }, s.note);
     note.addEventListener('input', () => (s.note = note.value));
 
@@ -1121,7 +1154,7 @@ async function renderEditor(root, { arg, params }) {
               ),
             )
           : null,
-        h('label', { class: 'field' }, h('span', {}, 'Date & time'), when),
+        h('div', { class: 'field' }, h('span', {}, 'Date & time'), when),
       ),
       h('div', { class: 'card stack' }, h('h2', { style: { margin: 0 } }, 'Tags'), tagBox, h('label', { class: 'field' }, h('span', {}, 'Note'), note)),
       h(
