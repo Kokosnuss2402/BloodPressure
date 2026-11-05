@@ -210,13 +210,14 @@ MEASUREMENT_TYPES.weight = {
   classify(v, st) {
     const bmi = bmiOf(v.weight, st?.heightCm);
     if (!Number.isFinite(bmi)) return null;
-    const label = (l) => `${l} · BMI ${bmi.toFixed(1)}`;
-    if (bmi < 18.5) return { id: 'underweight', label: label('Underweight'), rank: 2 };
-    if (bmi < 25) return { id: 'normal', label: label('Normal'), rank: 0 };
-    if (bmi < 30) return { id: 'overweight', label: label('Overweight'), rank: 2 };
-    if (bmi < 35) return { id: 'obese1', label: label('Obesity I'), rank: 3 };
-    if (bmi < 40) return { id: 'obese2', label: label('Obesity II'), rank: 4 };
-    return { id: 'obese3', label: label('Obesity III'), rank: 5 };
+    // label: for one reading (with its BMI); group: for a category across readings
+    const lvl = (id, group, rank) => ({ id, group, label: `${group} · BMI ${bmi.toFixed(1)}`, rank });
+    if (bmi < 18.5) return lvl('underweight', 'Underweight', 2);
+    if (bmi < 25) return lvl('normal', 'Normal', 0);
+    if (bmi < 30) return lvl('overweight', 'Overweight', 2);
+    if (bmi < 35) return lvl('obese1', 'Obesity I', 3);
+    if (bmi < 40) return lvl('obese2', 'Obesity II', 4);
+    return lvl('obese3', 'Obesity III', 5);
   },
   format(v, st) {
     const unit = st?.weightUnit ?? 'kg';

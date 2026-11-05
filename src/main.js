@@ -660,8 +660,8 @@ function distributionCard(list, type) {
       h(
         'div',
         { class: 'dist-row' },
-        h('span', {}, r.level.label),
-        h('div', { class: `dist-bar lvl-${r.level.rank}`, style: { width: `${(r.n / max) * 100}%` }, title: `${r.level.label}: ${r.n}` }),
+        h('span', {}, r.level.group ?? r.level.label),
+        h('div', { class: `dist-bar lvl-${r.level.rank}`, style: { width: `${(r.n / max) * 100}%` }, title: `${r.level.group ?? r.level.label}: ${r.n}` }),
         h('span', { class: 'n' }, r.n),
       ),
     ),
@@ -753,7 +753,8 @@ async function renderEditor(root, { arg, params }) {
     note: editing?.note ?? '',
     when: editing ? new Date(editing.timestamp) : new Date(),
     source: editing?.source ?? 'manual',
-    photoCanvas: null, // analysis canvas (<= 1600 px)
+    photoImg: null, // decoded photo, kept to redraw the analysis canvas when the type changes
+    photoCanvas: null, // analysis canvas (1600 px, 2400 px for far-away displays)
     photoBlob: null, // compressed photo for storage
     overlay: null, // detected boxes
     crop: null,
@@ -794,6 +795,10 @@ async function renderEditor(root, { arg, params }) {
                   s.values = { ...(MEASUREMENT_TYPES[t].defaults?.() ?? {}) };
                   s.fromPhoto.clear();
                   e.currentTarget.parentElement.querySelectorAll('button').forEach((b, i) => b.setAttribute('aria-pressed', String(TYPE_LIST[i].id === t)));
+                  if (s.photoImg) {
+                    s.photoCanvas = drawScaled(s.photoImg, MEASUREMENT_TYPES[t].farDisplay ? 2400 : 1600);
+                    s.crop = null;
+                  }
                   if (s.photoCanvas) runOCR();
                   drawForm();
                 },
@@ -814,6 +819,7 @@ async function renderEditor(root, { arg, params }) {
     drawPhoto();
     const img = await loadImage(file);
     // scales are photographed from further away: keep more pixels for the small display
+    s.photoImg = img;
     s.photoCanvas = drawScaled(img, MEASUREMENT_TYPES[s.type].farDisplay ? 2400 : 1600);
     if (state.settings.keepPhotos) s.photoBlob = await canvasToBlob(drawScaled(img, 1024));
     // photos picked from the gallery keep their own capture time
@@ -1226,7 +1232,7 @@ async function renderSettings(root) {
       { class: 'card' },
       h('div', { class: 'setting' }, h('div', {}, 'Blood sugar unit'), select('glucoseUnit', [['mg/dL', 'mg/dL'], ['mmol/L', 'mmol/L']], 'Blood sugar unit')),
       h('div', { class: 'setting' }, h('div', {}, 'Weight unit'), select('weightUnit', [['kg', 'kg'], ['lb', 'lb']], 'Weight unit')),
-      h('div', { class: 'setting' }, h('div', {}, 'Height', h('div', { class: 'desc' }, 'For BMI. Stays on this device unless backed up.')), heightInput()),
+      h('div', { class: 'setting' }, h('div', {}, 'Height', h('div', { class: 'desc' }, 'For BMI. Kept on this device only.')), heightInput()),
       h('div', { class: 'setting' }, h('div', {}, 'Text size'), select('textSize', [['normal', 'Normal'], ['large', 'Large'], ['xlarge', 'Extra large']], 'Text size')),
       h('div', { class: 'setting' }, h('div', {}, 'Appearance'), select('theme', [['system', 'System'], ['light', 'Light'], ['dark', 'Dark']], 'Appearance')),
       h('div', { class: 'setting' }, h('div', {}, 'Keep photos', h('div', { class: 'desc' }, 'Stored only in this browser, never uploaded to the backup.')), sw('keepPhotos')),
