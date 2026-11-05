@@ -1627,6 +1627,14 @@ async function renderSettings(root) {
 
 // ---------------------------------------------------------------- boot
 
+// Sticky bars below the title bar need its real height (notch / safe area, text size).
+{
+  const topbar = document.querySelector('.topbar');
+  const setTopbarH = () => document.documentElement.style.setProperty('--topbar-h', `${topbar.getBoundingClientRect().height}px`);
+  new ResizeObserver(setTopbarH).observe(topbar, { box: 'border-box' }); // safe-area padding counts
+  setTopbarH();
+}
+
 // Safari ignores user-scalable=no: block pinch gestures explicitly (text size is a setting instead)
 document.addEventListener('gesturestart', (e) => e.preventDefault());
 document.addEventListener('touchmove', (e) => e.touches.length > 1 && e.preventDefault(), { passive: false });

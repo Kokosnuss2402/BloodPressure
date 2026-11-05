@@ -788,10 +788,14 @@ main {
 }
 .filters {
   position: sticky;
-  top: 58px;
+  /* right below the title bar, whose height depends on the notch and text size
+     (--topbar-h is measured by main.js) */
+  top: var(--topbar-h, 58px);
   z-index: 4;
   background: var(--bg);
-  padding: 6px 0 10px;
+  padding: 6px 0 8px;
+  /* spacing below as margin, so the sticky background never covers the next card */
+  margin-bottom: 4px;
 }
 .filters .chips {
   flex-wrap: nowrap;
