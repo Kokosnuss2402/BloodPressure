@@ -273,7 +273,16 @@ try {
     await app.waitForSelector('.quick-actions');
     for (const [tile, heading] of [['Sugar', 'Latest blood sugar'], ['Weight', 'Latest weight'], ['Pressure', 'Latest blood pressure']]) {
       await app.locator('.quick-actions button', { hasText: tile }).click();
-      await app.waitForSelector(`#view .card h2:text-is("${heading}")`);
+      await app.waitForSelector(`#view .card h2:text-is("${heading}")`, { timeout: 8000 }).catch(async (e) => {
+        const dump = await app.evaluate(() => ({
+          hash: location.hash,
+          title: document.querySelector('#view-title')?.textContent,
+          pressed: [...document.querySelectorAll('.quick-actions button')].map((b) => `${b.textContent.trim()}=${b.getAttribute('aria-pressed')}`),
+          headings: [...document.querySelectorAll('#view h2')].map((x) => x.textContent),
+          text: document.querySelector('#view')?.innerText.slice(0, 300),
+        }));
+        throw new Error(`${e.message.split('\n')[0]}\n${JSON.stringify(dump, null, 1)}`);
+      });
       assert.equal(await app.locator('#view-title').innerText(), 'Overview', 'stays on the overview');
       assert.equal(await app.locator('.quick-actions button[aria-pressed="true"]').innerText().then((t) => t.trim().endsWith(tile)), true);
       assert.equal(await app.locator('#view .card h2', { hasText: 'Latest' }).count(), 1, `${tile}: only this type shown`);
