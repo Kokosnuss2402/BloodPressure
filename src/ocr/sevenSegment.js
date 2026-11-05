@@ -123,7 +123,8 @@ function toGray(img, maxDim, maxUp = 1) {
   return { gray, w, h, scale };
 }
 
-function adaptiveThreshold(gray, w, h, win, t) {
+/** Mean brightness of the (2r+1)² window around every pixel (computed once per image). */
+function localMean(gray, w, h, win) {
   // integral image (Float64 to avoid precision loss)
   const integ = new Float64Array((w + 1) * (h + 1));
   for (let y = 0; y < h; y++) {
@@ -133,7 +134,7 @@ function adaptiveThreshold(gray, w, h, win, t) {
       integ[(y + 1) * (w + 1) + x + 1] = integ[y * (w + 1) + x + 1] + row;
     }
   }
-  const mask = new Uint8Array(w * h);
+  const mean = new Float32Array(w * h);
   const r = Math.max(2, win >> 1);
   for (let y = 0; y < h; y++) {
     const ya = Math.max(0, y - r);
@@ -142,11 +143,18 @@ function adaptiveThreshold(gray, w, h, win, t) {
       const xa = Math.max(0, x - r);
       const xb = Math.min(w, x + r + 1);
       const count = (yb - ya) * (xb - xa);
-      const sum =
-        integ[yb * (w + 1) + xb] - integ[ya * (w + 1) + xb] - integ[yb * (w + 1) + xa] + integ[ya * (w + 1) + xa];
-      if (gray[y * w + x] * count < sum * (1 - t)) mask[y * w + x] = 1;
+      mean[y * w + x] =
+        (integ[yb * (w + 1) + xb] - integ[ya * (w + 1) + xb] - integ[yb * (w + 1) + xa] + integ[ya * (w + 1) + xa]) / count;
     }
   }
+  return mean;
+}
+
+/** Adaptive (Bradley) threshold: darker than the local mean by more than t. */
+function adaptiveThreshold(gray, mean, t) {
+  const mask = new Uint8Array(gray.length);
+  const k = 1 - t;
+  for (let i = 0; i < gray.length; i++) if (gray[i] < mean[i] * k) mask[i] = 1;
   return mask;
 }
 
@@ -569,15 +577,39 @@ function findDecimal(row, cands, w, slant) {
  *   value = digits as an integer, number = value with the detected decimal point
  */
 export function readSevenSegment(img, opts = {}) {
+  return readPrepared(prepare(img, opts), opts);
+}
+
+/**
+ * The part of a reading that does not depend on the threshold: crop, greyscale
+ * at the working size, optional inversion and the local mean. Reuse it for
+ * several thresholds of the same image.
+ * @param {{maxDim?:number, crop?:object, invert?:boolean}} opts
+ */
+export function prepare(img, opts = {}) {
   const src = opts.crop ? cropImage(img, opts.crop) : img;
   const { gray, w, h, scale } = toGray(src, opts.maxDim ?? 900, opts.crop ? 2 : 1);
   // LED / backlit displays: bright segments on a dark background
   if (opts.invert) for (let i = 0; i < gray.length; i++) gray[i] = 255 - gray[i];
-  const win = Math.round(Math.max(w, h) / 10);
-  const mask = adaptiveThreshold(gray, w, h, win, opts.threshold ?? 0.18);
+  const mean = localMean(gray, w, h, Math.round(Math.max(w, h) / 10));
+  return { gray, mean, w, h, scale, crop: opts.crop ?? null };
+}
+
+/** Threshold mask with thin lines removed, its components and segment candidates. */
+function segmentsOf(prep, threshold, far) {
+  const { gray, mean, w, h } = prep;
+  const mask = adaptiveThreshold(gray, mean, threshold);
   removeThinLines(mask, w, h, 3, Math.max(20, Math.round(0.025 * Math.min(w, h))));
   const comps = connectedComponents(mask, w, h);
-  const segs = segmentCandidates(comps, w, h, !!opts.crop, !!opts.far);
+  const segs = segmentCandidates(comps, w, h, !!prep.crop, !!far);
+  return { mask, comps, segs };
+}
+
+/** Read a prepared image with one threshold (see prepare). */
+export function readPrepared(prep, opts = {}) {
+  const { w, scale } = prep;
+  opts = { ...opts, crop: prep.crop };
+  const { mask, comps, segs } = segmentsOf(prep, opts.threshold ?? 0.18, opts.far);
 
   const slant = estimateSlant(segs, w);
   shearBoxes(segs, w, slant);
@@ -610,8 +642,72 @@ export function readSevenSegment(img, opts = {}) {
       height: r.height / scale,
     }));
   decoded.sort((a, b) => a.box.y0 - b.box.y0);
-  if (opts.debug) return { rows: decoded, slant, debug: { scale, w, h, comps, segs, digits, mask } };
+  if (opts.debug) return { rows: decoded, slant, debug: { scale, w, h: prep.h, comps, segs, digits, mask } };
   return { rows: decoded, slant };
+}
+
+/**
+ * Where in the photo might the display be? Clusters of segment-shaped blobs
+ * with a consistent stroke width, in any orientation (the photo may be
+ * sideways). Returns up to `max` boxes in source-image pixels, best first.
+ */
+export function displayCandidates(prep, { threshold = 0.18, far = true, max = 4 } = {}) {
+  const { segs } = segmentsOf(prep, threshold, far);
+  const n = segs.length;
+  if (!n) return [];
+  const parent = segs.map((_, i) => i);
+  const find = (i) => (parent[i] === i ? i : (parent[i] = find(parent[i])));
+  const len = segs.map((sg) => Math.max(sg.maxX - sg.minX, sg.maxY - sg.minY) + 1);
+  // sort by x so only nearby pairs are compared
+  const order = [...segs.keys()].sort((a, b) => segs[a].minX - segs[b].minX);
+  for (let oi = 0; oi < n; oi++) {
+    const i = order[oi];
+    const a = segs[i];
+    for (let oj = oi + 1; oj < n; oj++) {
+      const j = order[oj];
+      const b = segs[j];
+      const reach = 1.1 * Math.max(len[i], len[j]);
+      if (b.minX - a.maxX > reach) break;
+      const tmin = Math.min(a.thickness, b.thickness);
+      const tmax = Math.max(a.thickness, b.thickness);
+      if (tmax > tmin * 2) continue; // one display = one stroke width
+      const dx = Math.max(0, b.minX - a.maxX, a.minX - b.maxX);
+      const dy = Math.max(0, b.minY - a.maxY, a.minY - b.maxY);
+      if (dx <= reach && dy <= reach) parent[find(i)] = find(j);
+    }
+  }
+  const groups = new Map();
+  segs.forEach((sg, i) => {
+    const r = find(i);
+    if (!groups.has(r)) groups.set(r, []);
+    groups.get(r).push(sg);
+  });
+  const out = [];
+  for (const g of groups.values()) {
+    if (g.length < 3) continue;
+    const x0 = Math.min(...g.map((m) => m.minX));
+    const x1 = Math.max(...g.map((m) => m.maxX));
+    const y0 = Math.min(...g.map((m) => m.minY));
+    const y1 = Math.max(...g.map((m) => m.maxY));
+    const bw = x1 - x0 + 1;
+    const bh = y1 - y0 + 1;
+    const t = median(g.map((m) => m.thickness));
+    // a display is wider/taller than a few strokes and not the whole photo
+    if (Math.min(bw, bh) < 6 * t || bw > prep.w * 0.8 || bh > prep.h * 0.8) continue;
+    const spread = median(g.map((m) => Math.abs(m.thickness - t))) / t;
+    const area = g.reduce((s2, m) => s2 + m.area, 0);
+    // more strokes, consistent stroke width, strokes filling a fair part of the box
+    const fillRatio = area / (bw * bh);
+    // texture (fabric, floor, wood grain) makes clusters of very thin strokes; a
+    // display photographed at a usable size has strokes of 3 px and more
+    const strokeWeight = Math.min(1, Math.max(0, (t - 1.5) / 2.5)) ** 2;
+    const score = Math.min(g.length, 24) * (1 - Math.min(0.8, spread)) * Math.min(1, fillRatio / 0.08) * strokeWeight;
+    const sc = prep.scale;
+    const ox = prep.crop?.x ?? 0;
+    const oy = prep.crop?.y ?? 0;
+    out.push({ x0: x0 / sc + ox, y0: y0 / sc + oy, x1: x1 / sc + ox, y1: y1 / sc + oy, score, members: g.length, t: t / sc });
+  }
+  return out.sort((a, b) => b.score - a.score).slice(0, max);
 }
 
 function cropImage(img, c) {

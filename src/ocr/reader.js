@@ -2,7 +2,7 @@
 // (different thresholds, small rotations, zoom-in on the detected display)
 // and keeps the most plausible reading for the requested measurement type.
 
-import { readSevenSegment, pickDisplayStack } from './sevenSegment.js';
+import { prepare, readPrepared, displayCandidates, pickDisplayStack } from './sevenSegment.js';
 import { MEASUREMENT_TYPES } from '../types.js';
 
 /** Rotate by k quarter turns clockwise (swaps width and height for odd k). */
@@ -89,86 +89,226 @@ function stackBox(stack) {
   };
 }
 
+function cropPixels(img, c) {
+  const x = Math.max(0, Math.round(c.x));
+  const y = Math.max(0, Math.round(c.y));
+  const w = Math.max(1, Math.min(img.width - x, Math.round(c.w)));
+  const h = Math.max(1, Math.min(img.height - y, Math.round(c.h)));
+  const data = new Uint8ClampedArray(w * h * 4);
+  for (let yy = 0; yy < h; yy++) {
+    const so = ((y + yy) * img.width + x) * 4;
+    data.set(img.data.subarray(so, so + w * 4), yy * w * 4);
+  }
+  return { width: w, height: h, data, x, y };
+}
+
+/** Map a point of a quarter-turned image (k turns clockwise of a w×h image) back. */
+function unturn(k, w, h) {
+  if (k === 1) return ([x, y]) => [y, h - 1 - x];
+  if (k === 3) return ([x, y]) => [w - 1 - y, x];
+  if (k === 2) return ([x, y]) => [w - 1 - x, h - 1 - y];
+  return (p) => p;
+}
+
 /**
  * Read a measurement device display.
+ *
+ * Every reading pass works on a "view" of the photo: the photo itself, a
+ * slightly rotated or quarter-turned copy, or a crop around a display
+ * candidate. A view knows how to map its coordinates back to the photo, so the
+ * boxes of the result always mark the display in the photo.
+ *
+ *   1. quick pass on the whole photo (close-ups: done)
+ *   2. display candidates: clusters of segment strokes, each read in all four
+ *      orientations on a small crop
+ *   3. fallback: further thresholds, high resolution, LED, small and quarter turns
+ *   4. zoom on the best reading
+ *   5. vote digit by digit across several thresholds of the final crop; digits
+ *      without a clear majority are reported as uncertain
+ *
  * @param {ImageData|{width:number,height:number,data:Uint8ClampedArray}} img
- * @param {'bp'|'glucose'} kind
- * @param {{crop?:{x:number,y:number,w:number,h:number}, settings?:object}} [opts]
- *   settings: user units (glucoseUnit, weightUnit) used to interpret the digits
- * @returns {{values: object, score: number, confidence: number, rows: Array, box: object|null, rotation: number}}
+ * @param {'bp'|'glucose'|'weight'} kind
+ * @param {{crop?:{x:number,y:number,w:number,h:number}, settings?:object, debug?:boolean}} [opts]
+ *   crop: area the user marked; settings: user units (glucoseUnit, weightUnit)
+ * @returns {{values: object, score: number, confidence: number, rows: Array, box: object|null,
+ *   rotation: number, uncertain: string[]}}
  */
 export function readDisplay(img, kind = 'bp', opts = {}) {
   const type = MEASUREMENT_TYPES[kind];
+  const multi = type.fields.length > 1;
+  const longSide = Math.max(img.width, img.height);
   const passes = [];
-  // factor: how much `image` was downscaled; boxes are reported in full-resolution units
-  // transform: how to get the full-resolution image the boxes refer to (for the zoom pass)
-  const attempt = (image, rotation, readOpts, factor = 1, transform = null) => {
-    const { rows } = readSevenSegment(image, readOpts);
+
+  // ---- views
+  const memo = (f) => {
+    let v;
+    return () => (v ??= f());
+  };
+  const photoView = { key: 'photo', image: () => img, factor: 1, full: () => img, toPhoto: (p) => p, rotation: 0 };
+  let smallMemo = null;
+  const small = () => (smallMemo ??= downscale(img, 1000));
+  const rotView = (deg) => {
+    const rad = (deg * Math.PI) / 180;
+    const cos = Math.cos(rad);
+    const sin = Math.sin(rad);
+    const cx = img.width / 2;
+    const cy = img.height / 2;
+    return {
+      key: `rot${deg}`,
+      image: memo(() => rotateImage(small().image, deg)),
+      factor: small().factor,
+      full: memo(() => rotateImage(img, deg)),
+      // rotateImage samples the source at R(p - c) + c
+      toPhoto: ([x, y]) => [cos * (x - cx) + sin * (y - cy) + cx, -sin * (x - cx) + cos * (y - cy) + cy],
+      rotation: deg,
+    };
+  };
+  const quarterView = (k, fullRes) => {
+    const src = fullRes ? { image: img, factor: 1 } : small();
+    return {
+      key: `q${k}${fullRes ? 'f' : ''}`,
+      image: memo(() => rotateQuarter(src.image, k)),
+      factor: src.factor,
+      full: memo(() => rotateQuarter(img, k)),
+      toPhoto: unturn(k, img.width, img.height),
+      rotation: k * 90,
+    };
+  };
+  // a crop of the photo around a display candidate, turned by k quarters or
+  // rotated by a few degrees (tilted photo)
+  const cropView = (i, c, k, deg = 0) => {
+    const pix = memo(() => cropPixels(img, c));
+    const turned = memo(() => (deg ? rotateImage(pix(), deg) : rotateQuarter(pix(), k)));
+    const rad = (deg * Math.PI) / 180;
+    const back = (p) => {
+      let q;
+      if (deg) {
+        const cx = pix().width / 2;
+        const cy = pix().height / 2;
+        q = [Math.cos(rad) * (p[0] - cx) + Math.sin(rad) * (p[1] - cy) + cx, -Math.sin(rad) * (p[0] - cx) + Math.cos(rad) * (p[1] - cy) + cy];
+      } else q = unturn(k, pix().width, pix().height)(p);
+      return [q[0] + pix().x, q[1] + pix().y];
+    };
+    return { key: `c${i}q${k}r${deg}`, image: turned, factor: 1, full: turned, toPhoto: back, rotation: deg || k * 90, isCrop: true };
+  };
+
+  // ---- one reading pass (prepared images are shared between thresholds)
+  const prepCache = new Map();
+  const attempt = (view, readOpts) => {
+    const image = view.image();
+    // a crop view is read as a crop (glyphs may fill it; small crops are enlarged)
+    const crop = readOpts.crop ?? (view.isCrop ? { x: 0, y: 0, w: image.width, h: image.height } : null);
+    const pkey = `${view.key}|${readOpts.maxDim ?? 900}|${readOpts.invert ? 1 : 0}|${crop ? [crop.x, crop.y, crop.w, crop.h].map(Math.round).join(',') : ''}`;
+    let prep = prepCache.get(pkey);
+    if (!prep) {
+      prep = prepare(image, { maxDim: readOpts.maxDim ?? 900, invert: readOpts.invert, crop });
+      prepCache.set(pkey, prep);
+    }
+    const { rows } = readPrepared(prep, { threshold: readOpts.threshold ?? 0.18, far: readOpts.far });
     // multi-value displays (blood pressure): the stacked rows; single-value: every candidate row
-    const picked = type.fields.length > 1 ? pickDisplayStack(rows) : rows.filter((r) => r.value !== null);
-    // rel: digit height relative to the photo (small patterns in floors and fabrics are tiny)
-    const longSide = Math.max(img.width, img.height);
-    const stack = picked.map((r) => ({ ...r, box: scaleBox(r.box, factor), height: r.height * factor, rel: (r.height * factor) / longSide }));
+    const picked = multi ? pickDisplayStack(rows) : rows.filter((r) => r.value !== null);
+    // boxes in full-resolution units of the view; rel: digit height relative to the photo
+    const stack = picked.map((r) => ({ ...r, box: scaleBox(r.box, view.factor), height: r.height * view.factor, rel: (r.height * view.factor) / longSide }));
     const mapped = type.fromDisplayRows(stack, opts.settings);
-    if (type.fields.length === 1 && mapped.values && stack.length) {
+    if (!multi && mapped.values && stack.length) {
       // keep only the row that was used, for the overlay and the zoom pass
       const used = stack.filter((r) => r === mapped.row);
       if (used.length) stack.splice(0, stack.length, ...used);
     }
-    passes.push({ ...mapped, rows: stack, rotation, box: stack.length ? stackBox(stack) : null, readOpts, transform });
-    return passes[passes.length - 1];
+    const pass = { ...mapped, rows: stack, box: stack.length ? stackBox(stack) : null, view, readOpts };
+    passes.push(pass);
+    return pass;
   };
-  const good = () => passes.some((p) => p.score >= 1);
+  // A reading on a display candidate that two thresholds agree on is accepted
+  // even below a perfect score (small digits score lower by design).
+  let accepted = false;
+  const good = () => accepted || passes.some((p) => p.score >= 1);
+  const base = opts.crop ? { crop: opts.crop } : {};
 
-  const base = { crop: opts.crop };
-  for (const threshold of [0.18, 0.12, 0.25]) {
-    attempt(img, 0, { ...base, threshold });
-    if (good()) break;
+  // 1. quick pass (close-ups of a monitor)
+  attempt(photoView, { ...base, threshold: 0.18 });
+
+  // 2. display candidates (skipped when the user marked the area): small crops,
+  // read upright, slightly tilted and in the other quarter turns. Candidates are
+  // searched for dark digits on a light background and, failing that, for bright
+  // digits on a dark one (LED / backlit displays).
+  if (!good() && !opts.crop) {
+    const orientations = [[0, 0], [0, -6], [0, 6], [1, 0], [3, 0], [0, -10], [0, 10], [2, 0]];
+    let n = 0;
+    for (const invert of [false, true]) {
+      if (good()) break;
+      const prep = prepare(img, { maxDim: type.farDisplay ? 2400 : 1600, invert });
+      for (const cb of displayCandidates(prep, { max: 2 })) {
+        if (good()) break;
+        const i = n++;
+        const bw = cb.x1 - cb.x0;
+        const bh = cb.y1 - cb.y0;
+        const m = Math.max(0.3 * Math.max(bw, bh), 6 * cb.t);
+        const c = { x: cb.x0 - m, y: cb.y0 - m, w: bw + 2 * m, h: bh + 2 * m };
+        for (const [k, deg] of orientations) {
+          const view = cropView(i, c, k, deg);
+          // a second threshold only where the first one found digits at all
+          const first = attempt(view, { threshold: 0.18, maxDim: 900, invert });
+          if (first.score < 1 && first.rows.length) {
+            const second = attempt(view, { threshold: 0.12, maxDim: 900, invert });
+            const same = JSON.stringify(first.values) === JSON.stringify(second.values);
+            const complete = Object.keys(first.values).length === type.fields.length;
+            if (same && complete && Math.min(first.score, second.score) >= 0.85) accepted = true;
+          }
+          if (good()) break;
+        }
+      }
+    }
+  }
+
+  // 3. fallback: the whole photo with further settings
+  if (!good()) {
+    for (const threshold of [0.12, 0.25]) {
+      attempt(photoView, { ...base, threshold });
+      if (good()) break;
+    }
   }
   // display far away (small in the frame): read at higher resolution
-  if (!good() || type.farDisplay) {
+  if (!good() || (type.farDisplay && !passes.some((p) => p.view.isCrop && p.score >= 1))) {
     for (const threshold of [0.18, 0.12]) {
-      attempt(img, 0, { ...base, threshold, maxDim: 2400, far: true });
       if (good()) break;
+      attempt(photoView, { ...base, threshold, maxDim: 2400, far: true });
     }
   }
   // LED / backlit displays: bright digits on a dark background
   if (!good()) {
     for (const maxDim of [900, 1800]) {
       for (const threshold of [0.18, 0.12]) {
-        attempt(img, 0, { ...base, threshold, maxDim, invert: true });
+        attempt(photoView, { ...base, threshold, maxDim, invert: true });
         if (good()) break;
       }
       if (good()) break;
     }
   }
+  // tilted photo: read slightly rotated copies
   if (!good()) {
-    const small = downscale(img, 1000);
     const c = opts.crop;
-    const crop = c && { x: c.x / small.factor, y: c.y / small.factor, w: c.w / small.factor, h: c.h / small.factor };
+    const f = small().factor;
+    const crop = c && { x: c.x / f, y: c.y / f, w: c.w / f, h: c.h / f };
     for (const rot of [-6, 6, -10, 10]) {
-      const r = rotateImage(small.image, rot);
       for (const [threshold, invert] of [[0.18, false], [0.12, false], [0.18, true]]) {
-        attempt(r, rot, { crop, threshold, invert }, small.factor);
+        attempt(rotView(rot), { crop, threshold, invert });
         if (good()) break;
       }
       if (good()) break;
     }
   }
-
-  // photo sideways or upside down (e.g. EXIF orientation not applied): quarter turns
-  // Far-away displays (scales) need the full resolution here, and both sideways
+  // photo sideways or upside down (e.g. EXIF orientation not applied): quarter
+  // turns. Far-away displays need the full resolution, and both sideways
   // directions are tried: upside-down seven-segment digits often still look like
-  // digits (6/9, 2/2), so the more plausible reading (decimal point on the
-  // baseline, exactly decoded digits) decides.
+  // digits (6/9, 2/2), so the more plausible reading decides.
   if (!good()) {
-    const src = type.farDisplay ? { image: img, factor: 1 } : downscale(img, 1000);
-    const extra = type.farDisplay ? { maxDim: 2400, far: true } : {};
     for (const k of [1, 3, 2]) {
-      const r = rotateQuarter(src.image, k);
+      const view = quarterView(k, !!type.farDisplay);
+      const extra = type.farDisplay ? { maxDim: 2400, far: true } : {};
       for (const threshold of [0.18, 0.12]) {
-        attempt(r, k * 90, { threshold, quarter: k, ...extra }, src.factor, (im) => rotateQuarter(im, k));
-        if (passes[passes.length - 1].score >= 1) break;
+        const ps = attempt(view, { threshold, ...extra });
+        if (ps.score >= 1) break;
       }
       if (good() && k !== 1) break;
     }
@@ -177,29 +317,30 @@ export function readDisplay(img, kind = 'bp', opts = {}) {
   passes.sort((a, b) => b.score - a.score);
   let best = passes[0];
 
-  // Zoom-in pass: re-read just the display region at higher resolution.
-  if (best?.box) {
+  // 4. zoom: re-read just the display region at higher resolution
+  if (best?.box && !best.view.isCrop) {
     const b = best.box;
     const mw = (b.x1 - b.x0) * 0.35;
     const mh = (b.y1 - b.y0) * (best.rows.length > 1 ? 0.15 : 0.4);
     const crop = { x: b.x0 - mw, y: b.y0 - mh, w: b.x1 - b.x0 + 2 * mw, h: b.y1 - b.y0 + 2 * mh };
     // multi-row display read only partly (e.g. SYS found, DIA/PUL missed): the other
     // rows are below and may be wider, so zoom on a larger area around it
-    if (type.fields.length > 1 && best.score < 1) {
+    if (multi && best.score < 1) {
       const rh = Math.max(...best.rows.map((r) => r.height));
       const missing = type.fields.length - Object.keys(best.values).length;
       crop.h += missing * rh * 1.6;
       crop.x -= (b.x1 - b.x0) * 0.3;
       crop.w += (b.x1 - b.x0) * 0.6;
     }
+    const full = best.view.full();
     crop.x = Math.max(0, crop.x);
     crop.y = Math.max(0, crop.y);
-    const srcImg = best.transform ? best.transform(img) : best.rotation ? rotateImage(img, best.rotation) : img;
-    crop.w = Math.min(srcImg.width - crop.x, crop.w);
-    crop.h = Math.min(srcImg.height - crop.y, crop.h);
+    crop.w = Math.min(full.width - crop.x, crop.w);
+    crop.h = Math.min(full.height - crop.y, crop.h);
     // zoom only helps when the display is small in the frame
-    if (crop.w < srcImg.width * 0.75 || crop.h < srcImg.height * 0.75) {
-      const z = attempt(srcImg, best.rotation, { crop, threshold: best.readOpts.threshold, invert: best.readOpts.invert, quarter: best.readOpts.quarter }, 1, best.transform);
+    if (crop.w < full.width * 0.75 || crop.h < full.height * 0.75) {
+      const zoomView = { ...best.view, key: `${best.view.key}-full`, image: best.view.full, factor: 1 };
+      const z = attempt(zoomView, { crop, threshold: best.readOpts.threshold, invert: best.readOpts.invert });
       // The zoomed read sees the digits at higher resolution: prefer it when it is as
       // plausible for a complete reading, but only when strictly better for a partial
       // one (a partial zoom can pick a different row, e.g. pulse read as systolic).
@@ -207,31 +348,27 @@ export function readDisplay(img, kind = 'bp', opts = {}) {
     }
   }
 
-  if (!best) return { values: {}, score: 0, confidence: 0, rows: [], box: null, rotation: 0 };
-  const { readOpts, transform, ...result } = best;
-  // read on a quarter-turned copy: report the boxes in the photo's own orientation
-  if (readOpts.quarter) {
-    const k = readOpts.quarter;
-    const { width: w, height: h } = img;
-    const map = (b) => {
-      if (k === 1) return { x0: b.y0, x1: b.y1, y0: h - 1 - b.x1, y1: h - 1 - b.x0 };
-      if (k === 3) return { x0: w - 1 - b.y1, x1: w - 1 - b.y0, y0: b.x0, y1: b.x1 };
-      return { x0: w - 1 - b.x1, x1: w - 1 - b.x0, y0: h - 1 - b.y1, y1: h - 1 - b.y0 };
-    };
-    result.rows = result.rows.map((r) => ({ ...r, box: map(r.box) }));
-    if (result.box) result.box = map(result.box);
-    result.orientation = k * 90;
-    result.rotation = 0;
+  if (!best) return { values: {}, score: 0, confidence: 0, rows: [], box: null, rotation: 0, uncertain: [] };
+
+  // 5. vote digit by digit across thresholds of the same view and area
+  let uncertain = [];
+  if (best.rows.length) {
+    const others = [best];
+    // same view and area as the chosen reading (a crop view already is the area)
+    for (const threshold of [0.12, 0.15, 0.18, 0.22, 0.25]) {
+      if (Math.abs(threshold - (best.readOpts.threshold ?? 0.18)) < 1e-6) continue;
+      others.push(attempt(best.view, { ...best.readOpts, threshold }));
+    }
+    const voted = voteRows(best.rows, others);
+    const re = type.fromDisplayRows(voted.rows, opts.settings);
+    // use the voted reading unless it became less plausible
+    if (re.score >= best.score - 1e-9) best = { ...best, ...re, rows: multi ? voted.rows : re.row ? [re.row] : voted.rows };
+    const fieldRows = best.fieldRows ?? {};
+    uncertain = Object.keys(fieldRows).filter((k) => fieldRows[k]?.uncertain?.length);
   }
-  // Every row gets `poly`: its four corners in the photo's own coordinates. A
-  // reading found on a slightly rotated copy (rotateImage, about the centre)
-  // is mapped back, so the overlay can mark the display in the photo.
-  const rad = ((result.rotation || 0) * Math.PI) / 180;
-  const cos = Math.cos(rad);
-  const sin = Math.sin(rad);
-  const cx = img.width / 2;
-  const cy = img.height / 2;
-  const toPhoto = ([x, y]) => [cos * (x - cx) + sin * (y - cy) + cx, -sin * (x - cx) + cos * (y - cy) + cy];
+
+  // map rows and box back to the photo: `poly` = four corners in the photo
+  const toPhoto = best.view.toPhoto;
   const polyOf = (b) => [[b.x0, b.y0], [b.x1, b.y0], [b.x1, b.y1], [b.x0, b.y1]].map(toPhoto);
   const bboxOf = (poly) => ({
     x0: Math.min(...poly.map((p) => p[0])),
@@ -239,12 +376,74 @@ export function readDisplay(img, kind = 'bp', opts = {}) {
     y0: Math.min(...poly.map((p) => p[1])),
     y1: Math.max(...poly.map((p) => p[1])),
   });
-  result.rows = result.rows.map((r) => {
-    const poly = polyOf(r.box);
-    return { ...r, poly, box: bboxOf(poly) };
-  });
-  if (result.box) result.box = bboxOf(polyOf(result.box));
-  if (opts.debug) result.passes = passes.map((p) => ({ score: p.score, values: p.values, rows: p.rows.map((r) => r.text), opts: { ...p.readOpts, crop: p.readOpts.crop && 'crop' }, rotation: p.rotation, box: p.box, crop: p.readOpts.crop }));
-  delete result.transform;
+  const result = {
+    values: best.values,
+    score: best.score,
+    confidence: best.confidence,
+    rows: best.rows.map((r) => {
+      const poly = polyOf(r.box);
+      return { ...r, poly, box: bboxOf(poly) };
+    }),
+    box: best.box ? bboxOf(polyOf(best.box)) : null,
+    rotation: 0, // boxes are in the photo's own orientation
+    orientation: best.view.rotation,
+    uncertain,
+  };
+  if (opts.debug)
+    result.passes = passes.map((p) => ({ score: p.score, values: p.values, rows: p.rows.map((r) => r.text), view: p.view.key, opts: { ...p.readOpts, crop: p.readOpts.crop && 'crop' }, box: p.box }));
   return result;
+}
+
+/**
+ * Per-digit majority vote. `rows` are the rows of the chosen reading; `passes`
+ * are readings of the same view and area with other thresholds. A digit keeps
+ * the character most passes agree on (exactly decoded digits count double);
+ * positions without a clear majority are listed in row.uncertain.
+ */
+export function voteRows(rows, passes) {
+  const iou = (a, b) => {
+    const ix = Math.max(0, Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0));
+    const iy = Math.max(0, Math.min(a.y1, b.y1) - Math.max(a.y0, b.y0));
+    const inter = ix * iy;
+    const ua = (a.x1 - a.x0) * (a.y1 - a.y0) + (b.x1 - b.x0) * (b.y1 - b.y0) - inter;
+    return ua > 0 ? inter / ua : 0;
+  };
+  const out = rows.map((row) => {
+    const tallies = row.digits.map(() => new Map());
+    let voters = 0;
+    for (const p of passes) {
+      const match = p.rows.filter((r) => iou(r.box, row.box) > 0.4).sort((a, b) => iou(b.box, row.box) - iou(a.box, row.box))[0];
+      if (!match || match.digits.length !== row.digits.length) continue;
+      voters++;
+      match.digits.forEach((d, i) => {
+        if (d.char === '?') return;
+        tallies[i].set(d.char, (tallies[i].get(d.char) ?? 0) + (d.exact ? 2 : 1));
+      });
+    }
+    const uncertain = [];
+    const digits = row.digits.map((d, i) => {
+      const t = [...tallies[i].entries()].sort((a, b) => b[1] - a[1]);
+      const total = t.reduce((s, [, n]) => s + n, 0);
+      if (!t.length) {
+        uncertain.push(i);
+        return d;
+      }
+      const [char, n] = t[0];
+      if (n / total < 0.7 || (voters < 2 && !d.exact)) uncertain.push(i);
+      return char === d.char ? d : { ...d, char, exact: n / total >= 0.7 };
+    });
+    const text = digits.map((d) => d.char).join('');
+    const value = /^\d+$/.test(text) ? parseInt(text, 10) : null;
+    return {
+      ...row,
+      digits,
+      text,
+      value,
+      number: Number.isFinite(value) ? value / 10 ** (row.decimals ?? 0) : null,
+      confidence: digits.filter((d) => d.exact).length / Math.max(1, digits.length),
+      uncertain,
+      voters,
+    };
+  });
+  return { rows: out };
 }

@@ -114,16 +114,19 @@ export const MEASUREMENT_TYPES = {
         if (!inRange(sys, fSys)) continue;
         let score = 0.3;
         const values = { sys };
+        const fieldRows = { sys: rows[i] };
         if (inRange(dia, fDia) && sys > dia && sys - dia >= 10) {
           values.dia = dia;
+          fieldRows.dia = rows[i + 1];
           score = 0.7;
           if (inRange(pulse, fPul)) {
             values.pulse = pulse;
+            fieldRows.pulse = rows[i + 2];
             score = 1;
           }
         }
         score *= 0.6 + 0.4 * conf;
-        if (score > best.score) best = { values, score: score >= 0.99 ? 1 : score, confidence: conf };
+        if (score > best.score) best = { values, score: score >= 0.99 ? 1 : score, confidence: conf, fieldRows };
       }
       return best;
     },
@@ -187,7 +190,7 @@ export const MEASUREMENT_TYPES = {
       };
       const r = bestSingleRow(rows.filter((x) => inRange(toMg(x), f)));
       if (!r) return { values: {}, score: 0, confidence: 0 };
-      return { values: { glucose: toMg(r) }, score: singleRowScore(r) / (r.text.length >= 3 ? 1 : 0.85), confidence: r.confidence, row: r };
+      return { values: { glucose: toMg(r) }, score: singleRowScore(r) / (r.text.length >= 3 ? 1 : 0.85), confidence: r.confidence, row: r, fieldRows: { glucose: r } };
     },
   },
 };
@@ -258,7 +261,7 @@ MEASUREMENT_TYPES.weight = {
     const r = bestSingleRow(rows.filter((x) => x.text.length >= 2 && inRange(toW(x), ocrRange)), dec);
     if (!r) return { values: {}, score: 0, confidence: 0 };
     const score = singleRowScore(r) * dec(r);
-    return { values: { weight: toW(r) }, score, confidence: r.confidence, row: r };
+    return { values: { weight: toW(r) }, score, confidence: r.confidence, row: r, fieldRows: { weight: r } };
   },
 };
 
