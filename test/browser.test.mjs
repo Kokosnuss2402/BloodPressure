@@ -231,6 +231,12 @@ try {
     }
     await app.goto(base + '#/history');
     await app.waitForSelector('.entry');
+    // opening a saved measurement shows the editor without stray "null" text
+    await app.locator('.entry').first().click();
+    await app.waitForSelector('#in-glucose');
+    assert.ok(!/\bnull\b/.test(await app.locator('#view').innerText()), 'no "null" text in the editor');
+    await app.goBack();
+    await app.waitForSelector('.entry');
     const first = await app.locator('.entry').first().innerText();
     assert.match(first, /96/);
     assert.ok((await app.locator('.entry', { hasText: '#Home office' }).count()) === 1, 'custom tag shown in history');
@@ -260,6 +266,20 @@ try {
     await app.getByRole('button', { name: 'Save', exact: true }).click();
     await app.waitForSelector('.reading .big');
     assert.ok(await app.locator('.card', { hasText: 'Latest weight' }).count());
+  });
+
+  await check('e2e: overview tiles open the dashboard of each type', async () => {
+    for (const [tile, title, chartCount] of [['Pressure', 'Blood pressure', 1], ['Sugar', 'Blood sugar', 1], ['Weight', 'Weight', 0]]) {
+      await app.goto(base + '#/overview');
+      await app.waitForSelector('.quick-actions');
+      await app.locator('.quick-actions a', { hasText: tile }).click();
+      await app.waitForFunction((t) => document.querySelector('#view-title')?.textContent === t, title);
+      assert.ok((await app.locator('#view .chart svg').count()) >= chartCount, `${title}: chart shown`);
+      assert.ok((await app.locator('#view .entry').count()) >= 1, `${title}: recent entries listed`);
+      assert.ok(!/\bnull\b|\[object/.test(await app.locator('#view').innerText()), `${title}: no stray text`);
+      assert.equal(await app.locator('#view a', { hasText: 'New measurement' }).count(), 1);
+    }
+    if (shots) await app.screenshot({ path: path.join(shots, '09-weight-dashboard.png'), fullPage: false });
   });
 
   await check('e2e: CSV export contains pulse and tags', async () => {

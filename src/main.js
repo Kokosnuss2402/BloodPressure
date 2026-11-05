@@ -158,6 +158,7 @@ const routes = {
   history: { title: 'History', render: renderHistory },
   charts: { title: 'Charts', render: renderCharts },
   settings: { title: 'Settings', render: renderSettings },
+  type: { title: 'Dashboard', render: renderTypeDashboard },
   add: { title: 'New measurement', render: renderEditor },
   edit: { title: 'Edit measurement', render: renderEditor },
 };
@@ -171,7 +172,7 @@ async function route() {
   currentCleanup = null;
   $title.textContent = r.title;
   document.querySelectorAll('.tabbar a').forEach((a) => {
-    if (a.dataset.tab === name || (name === 'edit' && a.dataset.tab === 'history')) a.setAttribute('aria-current', 'page');
+    if (a.dataset.tab === name || (name === 'edit' && a.dataset.tab === 'history') || (name === 'type' && a.dataset.tab === 'overview')) a.setAttribute('aria-current', 'page');
     else a.removeAttribute('aria-current');
   });
   $view.replaceChildren();
@@ -195,7 +196,7 @@ function renderOverview(root) {
       TYPE_LIST.map((t, i) =>
         h(
           'a',
-          { class: `btn big ${i === 0 ? 'primary' : ''}`, href: `#/add?type=${t.id}&camera=1`, 'aria-label': `New ${t.label.toLowerCase()} measurement` },
+          { class: `btn big ${i === 0 ? 'primary' : ''}`, href: `#/type/${t.id}`, 'aria-label': `${t.label} dashboard` },
           h('span', { class: 'ico', 'aria-hidden': 'true' }, t.icon),
           t.tabLabel ?? t.label,
         ),
@@ -216,7 +217,20 @@ function renderOverview(root) {
     return;
   }
 
-  if (bp.length) {
+  if (bp.length) root.append(...bpCards(bp, 14));
+  if (glu.length) root.append(...glucoseCards(glu, false));
+
+  const wt = state.measurements.filter((m) => m.type === 'weight');
+  if (wt.length) root.append(weightCard(wt));
+
+  root.append(
+    h('p', { class: 'muted small', style: { textAlign: 'center' } }, 'Categories follow ESH 2023 (blood pressure), ADA (glucose) and WHO BMI thresholds. For information only – not a diagnosis.'),
+  );
+}
+
+/** Latest blood pressure, 7-day averages and a chart of the last `days` days. */
+function bpCards(bp, days) {
+  {
     const last = bp[0];
     const t = MEASUREMENT_TYPES.bp;
     const lvl = t.classify(last.values, state.settings);
@@ -232,7 +246,7 @@ function renderOverview(root) {
     };
 
     const chartBox = h('div');
-    root.append(
+    const cards = [
       h(
         'div',
         { class: 'card' },
@@ -264,21 +278,29 @@ function renderOverview(root) {
       h(
         'div',
         { class: 'card' },
-        h('div', { class: 'card-head' }, h('h2', {}, 'Last 14 days'), h('a', { href: '#/charts', class: 'small' }, 'All charts →')),
+        h('div', { class: 'card-head' }, h('h2', {}, `Last ${days} days`), h('a', { href: '#/charts', onclick: () => (state.chartFilter.type = 'bp'), class: 'small' }, 'All charts →')),
         bpLegend(false),
         chartBox,
       ),
-    );
-    renderChart(chartBox, bpChartConfig(inLastDays(bp, 14), [Date.now() - 14 * 86400000, Date.now()], 180));
+    ];
+    // charts measure their container: render once the cards are in the page
+    queueMicrotask(() => renderChart(chartBox, bpChartConfig(inLastDays(bp, days), [Date.now() - days * 86400000, Date.now()], 180)));
+    return cards;
   }
+}
 
-  if (glu.length) {
+/** Latest blood sugar (+ a 30-day chart on the type dashboard). */
+function glucoseCards(glu, withChart) {
+  const unit = state.settings.glucoseUnit;
+  {
     const last = glu[0];
     const t = MEASUREMENT_TYPES.glucose;
     const week = inLastDays(glu, 7);
     const avg = averages(week, t);
     const ctx = GLUCOSE_CONTEXTS.find((c) => c.id === last.values.context);
-    root.append(
+    const chartBox = h('div');
+    if (withChart) queueMicrotask(() => renderChart(chartBox, glucoseChartConfig(inLastDays(glu, 30), [Date.now() - 30 * 86400000, Date.now()])));
+    return [
       h(
         'div',
         { class: 'card' },
@@ -290,14 +312,58 @@ function renderOverview(root) {
         ),
         h('div', { class: 'row', style: { marginTop: '10px' } }, levelPill(t.classify(last.values, state.settings)), h('span', { class: 'muted small' }, `7-day avg ${formatGlucose(avg.glucose, unit)} ${unit} · ${avg.count} readings`)),
       ),
-    );
+      withChart ? h('div', { class: 'card' }, h('h2', {}, `Last 30 days (${unit})`), chartBox) : null,
+    ].filter(Boolean);
   }
+}
 
-  const wt = state.measurements.filter((m) => m.type === 'weight');
-  if (wt.length) root.append(weightCard(wt));
+// ---------------------------------------------------------------- type dashboard
 
+function renderTypeDashboard(root, { arg }) {
+  const type = MEASUREMENT_TYPES[arg];
+  if (!type) {
+    location.hash = '#/overview';
+    return;
+  }
+  $title.textContent = type.label;
+  const list = state.measurements.filter((m) => m.type === type.id);
   root.append(
-    h('p', { class: 'muted small', style: { textAlign: 'center' } }, 'Categories follow ESH 2023 (blood pressure), ADA (glucose) and WHO BMI thresholds. For information only – not a diagnosis.'),
+    h(
+      'a',
+      { class: 'btn primary block', href: `#/add?type=${type.id}&camera=1`, style: { marginBottom: '14px' } },
+      h('span', { 'aria-hidden': 'true' }, type.icon),
+      'New measurement',
+    ),
+  );
+  if (!list.length) {
+    root.append(h('div', { class: 'card empty' }, h('div', { class: 'ico', 'aria-hidden': 'true' }, type.icon), h('h2', {}, `No ${type.label.toLowerCase()} measurements yet`), h('p', {}, 'Take a photo of your device or enter the values by hand.')));
+    return;
+  }
+  if (type.id === 'bp') root.append(...bpCards(list, 30));
+  else if (type.id === 'glucose') root.append(...glucoseCards(list, true));
+  else root.append(weightCard(list));
+
+  const month = inLastDays(list, 30);
+  if (month.length) {
+    root.append(h('div', { class: 'section-title' }, 'Last 30 days'), statsCard(month, type), distributionCard(month, type));
+    if (type.id === 'bp') root.append(tagCompareCard(month, type));
+  }
+  root.append(
+    h(
+      'div',
+      { class: 'card-head', style: { margin: '22px 4px 8px' } },
+      h('div', { class: 'section-title', style: { margin: 0 } }, 'Recent'),
+      h(
+        'a',
+        {
+          class: 'small',
+          href: '#/history',
+          onclick: () => Object.assign(state.historyFilter, { type: type.id, days: 0, tag: null }),
+        },
+        `All ${list.length} in history →`,
+      ),
+    ),
+    ...list.slice(0, 10).map(entryRow),
   );
 }
 
@@ -784,10 +850,12 @@ async function renderEditor(root, { arg, params }) {
   const formArea = h('div', { class: 'stack' });
   const errorsBox = h('div');
 
+  // (DOM append() would render a null as the text "null": drop it)
   root.append(
-    fileCam,
-    fileGal,
-    editing
+    ...[
+      fileCam,
+      fileGal,
+      editing
       ? null
       : h(
           'div',
@@ -814,9 +882,10 @@ async function renderEditor(root, { arg, params }) {
             ),
           ),
         ),
-    photoArea,
-    formArea,
-    errorsBox,
+      photoArea,
+      formArea,
+      errorsBox,
+    ].filter(Boolean),
   );
 
   // ---- photo

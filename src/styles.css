@@ -373,28 +373,13 @@ main {
 }
 
 .pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 3px 10px;
+  display: inline-block;
+  padding: 7px 10px;
+  line-height: 1;
   border-radius: 999px;
   font-size: 0.8rem;
   font-weight: 600;
   white-space: nowrap;
-}
-.pill .dots {
-  display: inline-flex;
-  gap: 2px;
-}
-.pill .dots i {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: currentColor;
-  opacity: 0.35;
-}
-.pill .dots i.on {
-  opacity: 1;
 }
 .lvl-0 { background: var(--lvl-0); color: var(--lvl-ink-0); }
 .lvl-1 { background: var(--lvl-1); color: var(--lvl-ink-1); }
@@ -498,7 +483,7 @@ main {
   flex: 1;
   border: 0;
   background: transparent;
-  padding: 8px 10px;
+  padding: 13px 10px; /* label box is trimmed to the cap height (text-box) */
   border-radius: 9px;
   font-weight: 600;
   font-size: 0.9rem;
@@ -1075,6 +1060,30 @@ table.stats th {
   overflow: hidden;
   clip: rect(0 0 0 0);
   white-space: nowrap;
+}
+
+/* Optical centring of labels: trim the text box to the cap height and the
+   baseline, so equal padding centres the letters whatever the font's ascent and
+   descent (system fonts differ between iOS, Android and desktop). */
+.pill,
+.chip,
+.btn,
+.segmented button,
+.tabbar a span {
+  text-box: trim-both cap alphabetic;
+}
+@supports not (text-box: trim-both cap alphabetic) {
+  .pill {
+    padding: 5px 10px 3px;
+  }
+  .segmented button {
+    padding: 8px 10px;
+  }
+}
+/* .btn is a flex box (text-box does not apply there): centre its label via a
+   trimmed inner box instead */
+.btn {
+  line-height: 1;
 }
 
 @media (max-width: 360px) {
