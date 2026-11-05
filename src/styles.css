@@ -422,6 +422,12 @@ main {
   padding: 10px 6px;
   font-size: 0.95rem;
 }
+/* the overview switch: the selected type is filled */
+.quick-actions .btn[aria-pressed='true'] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
 
 /* ---------- buttons & forms ---------- */
 .btn {

@@ -268,18 +268,24 @@ try {
     assert.ok(await app.locator('.card', { hasText: 'Latest weight' }).count());
   });
 
-  await check('e2e: overview tiles open the dashboard of each type', async () => {
-    for (const [tile, title, chartCount] of [['Pressure', 'Blood pressure', 1], ['Sugar', 'Blood sugar', 1], ['Weight', 'Weight', 0]]) {
-      await app.goto(base + '#/overview');
-      await app.waitForSelector('.quick-actions');
-      await app.locator('.quick-actions a', { hasText: tile }).click();
-      await app.waitForFunction((t) => document.querySelector('#view-title')?.textContent === t, title);
-      assert.ok((await app.locator('#view .chart svg').count()) >= chartCount, `${title}: chart shown`);
-      assert.ok((await app.locator('#view .entry').count()) >= 1, `${title}: recent entries listed`);
-      assert.ok(!/\bnull\b|\[object/.test(await app.locator('#view').innerText()), `${title}: no stray text`);
-      assert.equal(await app.locator('#view a', { hasText: 'New measurement' }).count(), 1);
+  await check('e2e: overview tiles switch the overview between types', async () => {
+    await app.goto(base + '#/overview');
+    await app.waitForSelector('.quick-actions');
+    for (const [tile, heading] of [['Sugar', 'Latest blood sugar'], ['Weight', 'Latest weight'], ['Pressure', 'Latest blood pressure']]) {
+      await app.locator('.quick-actions button', { hasText: tile }).click();
+      await app.waitForSelector(`#view .card h2:text-is("${heading}")`);
+      assert.equal(await app.locator('#view-title').innerText(), 'Overview', 'stays on the overview');
+      assert.equal(await app.locator('.quick-actions button[aria-pressed="true"]').innerText().then((t) => t.trim().endsWith(tile)), true);
+      assert.equal(await app.locator('#view .card h2', { hasText: 'Latest' }).count(), 1, `${tile}: only this type shown`);
+      assert.ok((await app.locator('#view .entry').count()) >= 1, `${tile}: recent entries listed`);
+      assert.ok(!/\bnull\b|\[object/.test(await app.locator('#view').innerText()), `${tile}: no stray text`);
     }
-    if (shots) await app.screenshot({ path: path.join(shots, '09-weight-dashboard.png'), fullPage: false });
+    // the choice is remembered
+    await app.locator('.quick-actions button', { hasText: 'Sugar' }).click();
+    await app.reload();
+    await app.waitForSelector('#view .card h2:text-is("Latest blood sugar")');
+    await app.locator('.quick-actions button', { hasText: 'Pressure' }).click();
+    if (shots) await app.screenshot({ path: path.join(shots, '09-overview-switch.png') });
   });
 
   await check('e2e: CSV export contains pulse and tags', async () => {

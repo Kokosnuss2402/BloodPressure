@@ -105,11 +105,14 @@ const state = {
     claudeKey: '',
     claudeAuto: false,
   },
+  overviewType: 'bp', // which measurement the overview shows
   historyFilter: { type: 'all', days: 0, tag: null },
   chartFilter: { type: 'bp', days: 30, tag: null },
 };
 
 async function loadSettings() {
+  const ov = await getSetting('overviewType', 'bp');
+  if (MEASUREMENT_TYPES[ov]) state.overviewType = ov;
   for (const k of Object.keys(state.settings)) state.settings[k] = await getSetting(k, state.settings[k]);
   applyTheme();
 }
@@ -158,7 +161,14 @@ const routes = {
   history: { title: 'History', render: renderHistory },
   charts: { title: 'Charts', render: renderCharts },
   settings: { title: 'Settings', render: renderSettings },
-  type: { title: 'Dashboard', render: renderTypeDashboard },
+  // old links to per-type pages: select the type on the overview instead
+  type: {
+    title: 'Overview',
+    render: (root, { arg }) => {
+      if (MEASUREMENT_TYPES[arg]) state.overviewType = arg;
+      location.replace('#/overview');
+    },
+  },
   add: { title: 'New measurement', render: renderEditor },
   edit: { title: 'Edit measurement', render: renderEditor },
 };
@@ -172,7 +182,7 @@ async function route() {
   currentCleanup = null;
   $title.textContent = r.title;
   document.querySelectorAll('.tabbar a').forEach((a) => {
-    if (a.dataset.tab === name || (name === 'edit' && a.dataset.tab === 'history') || (name === 'type' && a.dataset.tab === 'overview')) a.setAttribute('aria-current', 'page');
+    if (a.dataset.tab === name || (name === 'edit' && a.dataset.tab === 'history')) a.setAttribute('aria-current', 'page');
     else a.removeAttribute('aria-current');
   });
   $view.replaceChildren();
@@ -185,47 +195,49 @@ window.addEventListener('hashchange', route);
 // ---------------------------------------------------------------- overview
 
 function renderOverview(root) {
-  const unit = state.settings.glucoseUnit;
-  const bp = state.measurements.filter((m) => m.type === 'bp');
-  const glu = state.measurements.filter((m) => m.type === 'glucose');
-
-  root.append(
+  const content = h('div');
+  const tiles = TYPE_LIST.map((t) =>
     h(
-      'div',
-      { class: 'quick-actions' },
-      TYPE_LIST.map((t, i) =>
-        h(
-          'a',
-          { class: `btn big ${i === 0 ? 'primary' : ''}`, href: `#/type/${t.id}`, 'aria-label': `${t.label} dashboard` },
-          h('span', { class: 'ico', 'aria-hidden': 'true' }, t.icon),
-          t.tabLabel ?? t.label,
-        ),
-      ),
+      'button',
+      {
+        class: 'btn big',
+        type: 'button',
+        'aria-pressed': String(state.overviewType === t.id),
+        onclick: () => {
+          state.overviewType = t.id;
+          setSetting('overviewType', t.id);
+          tiles.forEach((b, i) => b.setAttribute('aria-pressed', String(TYPE_LIST[i].id === t.id)));
+          drawContent();
+        },
+      },
+      h('span', { class: 'ico', 'aria-hidden': 'true' }, t.icon),
+      t.tabLabel ?? t.label,
     ),
   );
+  // a switch: the tiles choose which measurement the overview shows
+  root.append(h('div', { class: 'quick-actions', role: 'group', 'aria-label': 'Show measurement type' }, tiles), content);
 
-  if (!state.measurements.length) {
-    root.append(
-      h(
-        'div',
-        { class: 'card empty' },
-        h('div', { class: 'ico', 'aria-hidden': 'true' }, '🩺'),
-        h('h2', {}, 'No measurements yet'),
-        h('p', {}, 'Take a photo of your blood pressure monitor, glucose meter or scale. The numbers are read right here in your browser – you check them before saving.'),
-      ),
+  function drawContent() {
+    content.replaceChildren();
+    if (!state.measurements.length) {
+      content.append(
+        h(
+          'div',
+          { class: 'card empty' },
+          h('div', { class: 'ico', 'aria-hidden': 'true' }, '🩺'),
+          h('h2', {}, 'No measurements yet'),
+          h('p', {}, 'Take a photo of your blood pressure monitor, glucose meter or scale. The numbers are read right here in your browser – you check them before saving.'),
+          h('a', { class: 'btn primary', href: `#/add?type=${state.overviewType}&camera=1` }, '+ Add measurement'),
+        ),
+      );
+      return;
+    }
+    renderTypeContent(content, MEASUREMENT_TYPES[state.overviewType] ?? MEASUREMENT_TYPES.bp);
+    content.append(
+      h('p', { class: 'muted small', style: { textAlign: 'center' } }, 'Categories follow ESH 2023 (blood pressure), ADA (glucose) and WHO BMI thresholds. For information only – not a diagnosis.'),
     );
-    return;
   }
-
-  if (bp.length) root.append(...bpCards(bp, 14));
-  if (glu.length) root.append(...glucoseCards(glu, false));
-
-  const wt = state.measurements.filter((m) => m.type === 'weight');
-  if (wt.length) root.append(weightCard(wt));
-
-  root.append(
-    h('p', { class: 'muted small', style: { textAlign: 'center' } }, 'Categories follow ESH 2023 (blood pressure), ADA (glucose) and WHO BMI thresholds. For information only – not a diagnosis.'),
-  );
+  drawContent();
 }
 
 /** Latest blood pressure, 7-day averages and a chart of the last `days` days. */
@@ -319,24 +331,20 @@ function glucoseCards(glu, withChart) {
 
 // ---------------------------------------------------------------- type dashboard
 
-function renderTypeDashboard(root, { arg }) {
-  const type = MEASUREMENT_TYPES[arg];
-  if (!type) {
-    location.hash = '#/overview';
-    return;
-  }
-  $title.textContent = type.label;
+/** Overview content for one measurement type. */
+function renderTypeContent(root, type) {
   const list = state.measurements.filter((m) => m.type === type.id);
-  root.append(
-    h(
-      'a',
-      { class: 'btn primary block', href: `#/add?type=${type.id}&camera=1`, style: { marginBottom: '14px' } },
-      h('span', { 'aria-hidden': 'true' }, type.icon),
-      'New measurement',
-    ),
-  );
   if (!list.length) {
-    root.append(h('div', { class: 'card empty' }, h('div', { class: 'ico', 'aria-hidden': 'true' }, type.icon), h('h2', {}, `No ${type.label.toLowerCase()} measurements yet`), h('p', {}, 'Take a photo of your device or enter the values by hand.')));
+    root.append(
+      h(
+        'div',
+        { class: 'card empty' },
+        h('div', { class: 'ico', 'aria-hidden': 'true' }, type.icon),
+        h('h2', {}, `No ${type.label.toLowerCase()} measurements yet`),
+        h('p', {}, 'Take a photo of your device or enter the values by hand.'),
+        h('a', { class: 'btn primary', href: `#/add?type=${type.id}&camera=1` }, `+ Add ${type.label.toLowerCase()}`),
+      ),
+    );
     return;
   }
   if (type.id === 'bp') root.append(...bpCards(list, 30));
@@ -1287,6 +1295,11 @@ async function renderEditor(root, { arg, params }) {
     await reload();
     afterChange();
     toast(editing ? 'Changes saved' : `Saved: ${type.format(values, state.settings)}`);
+    // show what was just measured on the overview
+    if (!editing) {
+      state.overviewType = s.type;
+      setSetting('overviewType', s.type);
+    }
     location.hash = editing ? '#/history' : '#/overview';
   }
 
