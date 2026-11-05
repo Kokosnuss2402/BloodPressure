@@ -1208,7 +1208,7 @@ async function renderEditor(root, { arg, params }) {
           ),
           h(
             'p',
-            { class: 'muted small', style: { margin: 0 } },
+            { class: 'muted small photo-hint' },
             existing
               ? 'Take a new photo to re-read this measurement.'
               : `Hold the phone straight in front of the display, avoid reflections.${liveSupported ? ' Live scan reads the display through the camera until the reading is stable.' : ''} Or simply type the values below.`,
