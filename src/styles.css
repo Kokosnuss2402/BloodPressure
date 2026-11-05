@@ -638,6 +638,12 @@ main {
   font-size: 0.75rem;
   color: var(--text-3);
 }
+.value-input.uncertain {
+  border-color: var(--series-dia);
+}
+.value-input .from-photo-tag.uncertain {
+  color: var(--series-dia);
+}
 .value-input .from-photo-tag {
   font-size: 0.72rem;
   font-weight: 600;

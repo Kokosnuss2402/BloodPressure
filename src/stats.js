@@ -49,6 +49,34 @@ export function trend(measurements, key, days = 7, now = Date.now()) {
   return Number.isFinite(a) && Number.isFinite(b) ? a - b : NaN;
 }
 
+/**
+ * Is a new reading far from the user's recent ones? Returns short hints (no
+ * values are changed): blood pressure more than max(25 mmHg, 3 SD) away from
+ * the 30-day mean, weight more than 5 % away. Needs a few recent readings.
+ */
+export function unusualVsHistory(type, values, measurements, now = Date.now()) {
+  const recent = measurements.filter((m) => m.type === type && now - new Date(m.timestamp).getTime() < 30 * DAY);
+  const hints = [];
+  const stat = (key) => {
+    const v = recent.map((m) => m.values?.[key]).filter(Number.isFinite);
+    const mu = mean(v);
+    const sd = v.length > 1 ? Math.sqrt(v.reduce((s, x) => s + (x - mu) ** 2, 0) / (v.length - 1)) : 0;
+    return { n: v.length, mu, sd };
+  };
+  if (type === 'bp') {
+    for (const [key, label] of [['sys', 'Systolic'], ['dia', 'Diastolic']]) {
+      const { n, mu, sd } = stat(key);
+      if (n < 3 || !Number.isFinite(values[key])) continue;
+      if (Math.abs(values[key] - mu) > Math.max(25, 3 * sd)) hints.push({ key, text: `${label} is far ${values[key] > mu ? 'above' : 'below'} your 30-day average of ${Math.round(mu)}.` });
+    }
+  } else if (type === 'weight') {
+    const { n, mu } = stat('weight');
+    if (n >= 2 && Number.isFinite(values.weight) && Math.abs(values.weight - mu) > 0.05 * mu)
+      hints.push({ key: 'weight', text: `This is more than 5 % ${values.weight > mu ? 'above' : 'below'} your 30-day average.` });
+  }
+  return hints;
+}
+
 export function allTags(measurements, defaults = []) {
   const counts = new Map(defaults.map((t) => [t, 0]));
   for (const m of measurements) for (const t of m.tags ?? []) counts.set(t, (counts.get(t) ?? 0) + 1);

@@ -14,7 +14,7 @@ import {
 } from './db.js';
 import { MEASUREMENT_TYPES, TYPE_LIST, GLUCOSE_CONTEXTS, DEFAULT_TAGS, formatGlucose, formatWeight, toMgdl, MGDL_PER_MMOL, LB_PER_KG, bmiOf } from './types.js';
 import { toCSV, localDate } from './csv.js';
-import { averages, byTimeOfDay, inLastDays, trend, allTags } from './stats.js';
+import { averages, byTimeOfDay, inLastDays, trend, allTags, unusualVsHistory } from './stats.js';
 import { renderChart, markerSVG } from './chart.js';
 import { icon, iconSVG } from './icons.js';
 import { syncNow, scheduleSync, getSyncConfig, testConnection, resetSyncState, setPassphrase, forgetKey } from './sync.js';
@@ -825,6 +825,7 @@ async function renderEditor(root, { arg, params }) {
     type: editing?.type ?? (MEASUREMENT_TYPES[params.get('type')] ? params.get('type') : 'bp'),
     values: { ...(editing?.values ?? {}) },
     fromPhoto: new Set(),
+    uncertain: new Set(), // fields with a digit the reader was not sure about
     ocrRaw: editing?.ocr?.raw ?? null,
     tags: new Set(editing?.tags ?? []),
     note: editing?.note ?? '',
@@ -921,11 +922,13 @@ async function renderEditor(root, { arg, params }) {
     try {
       const { result, ms } = await readInWorker(image, s.type, s.crop);
       s.overlay = result;
+      s.uncertain = new Set(result.uncertain ?? []);
       s.ocrRaw = { ...result.values, engine: 'on-device', score: result.score };
       applyRecognized(result.values);
       const n = Object.keys(result.values).length;
       const need = MEASUREMENT_TYPES[s.type].fields.length;
-      if (n >= need) s.status = { ok: true, text: `Read on your device in ${ms} ms – please check the values below.` };
+      if (n >= need && s.uncertain.size) s.status = { warn: true, text: `Read on your device in ${ms} ms – some digits were hard to read: check the values marked "please check".` };
+      else if (n >= need) s.status = { ok: true, text: `Read on your device in ${ms} ms – please check the values below.` };
       else if (n) s.status = { warn: true, text: 'Only part of the display could be read. Check and complete the values, or drag a box around the numbers.' };
       else s.status = { warn: true, text: 'Could not read the display. Drag a box around the numbers to retry, or type them in.' };
     } catch (err) {
@@ -1141,20 +1144,26 @@ async function renderEditor(root, { arg, params }) {
         const n = raw === '' ? undefined : Number(raw);
         s.values[f.key] = Number.isFinite(n) ? f.fromInput(n, st) : undefined;
         s.fromPhoto.delete(f.key);
+        s.uncertain.delete(f.key);
         s.editedAt[f.key] = Date.now();
         const box = input.closest('.value-input');
-        box.classList.remove('from-photo');
+        box.classList.remove('from-photo', 'uncertain');
         box.querySelector('.from-photo-tag')?.remove();
         drawErrors();
+        drawHints();
       });
       valueInputs.append(
         h(
           'div',
-          { class: `value-input ${s.fromPhoto.has(f.key) ? 'from-photo' : ''}` },
+          { class: `value-input ${s.fromPhoto.has(f.key) ? 'from-photo' : ''} ${s.uncertain.has(f.key) ? 'uncertain' : ''}` },
           h('label', { for: `in-${f.key}` }, f.short),
           input,
           h('div', { class: 'unit' }, f.unit(st)),
-          s.fromPhoto.has(f.key) ? h('div', { class: 'from-photo-tag', title: 'Read from the photo' }, 'from photo') : null,
+          s.fromPhoto.has(f.key)
+            ? s.uncertain.has(f.key)
+              ? h('div', { class: 'from-photo-tag uncertain', title: 'A digit of this value was hard to read' }, 'please check')
+              : h('div', { class: 'from-photo-tag', title: 'Read from the photo' }, 'from photo')
+            : null,
         ),
       );
     }
@@ -1245,6 +1254,7 @@ async function renderEditor(root, { arg, params }) {
         { class: 'card stack' },
         s.fromPhoto.size ? h('div', { class: 'notice' }, 'Values marked in blue were read from the photo. Compare them with the display and correct them if needed before saving.') : null,
         valueInputs,
+        hintBox,
         s.type === 'glucose'
           ? h(
               'label',
@@ -1268,6 +1278,7 @@ async function renderEditor(root, { arg, params }) {
       ),
     );
     drawErrors();
+    drawHints();
   }
 
   function currentValues() {
@@ -1280,6 +1291,14 @@ async function renderEditor(root, { arg, params }) {
 
   function drawErrors() {
     errorsBox.replaceChildren();
+  }
+
+  // compare with the user's recent readings (a hint only; nothing is changed)
+  const hintBox = h('div');
+  function drawHints() {
+    const others = state.measurements.filter((m) => m.id !== editing?.id);
+    const hints = unusualVsHistory(s.type, currentValues(), others);
+    hintBox.replaceChildren(...hints.map((x) => h('div', { class: 'notice warn' }, `${x.text} Please check the value.`)));
   }
 
   async function onSave() {

@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { decodeSegments } from '../../src/ocr/sevenSegment.js';
 import { MEASUREMENT_TYPES, toMgdl, formatGlucose } from '../../src/types.js';
 import { toCSV, CSV_COLUMNS } from '../../src/csv.js';
-import { averages, trend, allTags, byTimeOfDay } from '../../src/stats.js';
+import { averages, trend, allTags, byTimeOfDay, unusualVsHistory } from '../../src/stats.js';
+import { voteRows } from '../../src/ocr/reader.js';
 
 const bp = MEASUREMENT_TYPES.bp;
 const glu = MEASUREMENT_TYPES.glucose;
@@ -97,4 +98,28 @@ test('stats: averages, trends, tags, time of day', () => {
   const { morning, evening } = byTimeOfDay([{ timestamp: '2026-11-05T07:00:00' }, { timestamp: '2026-11-05T20:00:00' }]);
   assert.equal(morning.length, 1);
   assert.equal(evening.length, 1);
+});
+
+test('per-digit vote across thresholds, uncertain digits are reported', () => {
+  const box = { x0: 0, x1: 100, y0: 0, y1: 50 };
+  const row = (chars, exact = true) => ({ box, decimals: 0, digits: [...chars].map((c) => ({ char: c, exact })), text: chars });
+  // the chosen pass misread the middle digit; three other thresholds agree on "0"
+  const best = row('188', false);
+  const { rows } = voteRows([best], [{ rows: [best] }, { rows: [row('108')] }, { rows: [row('108')] }, { rows: [row('108')] }]);
+  assert.equal(rows[0].text, '108');
+  assert.equal(rows[0].value, 108);
+  assert.deepEqual(rows[0].uncertain, []);
+  // passes disagree: the digit is reported as uncertain
+  const split = voteRows([row('71')], [{ rows: [row('71')] }, { rows: [row('11')] }]);
+  assert.deepEqual(split.rows[0].uncertain, [0]);
+});
+
+test('hint when a reading is far from the recent ones', () => {
+  const now = Date.parse('2026-11-05T12:00:00Z');
+  const bp = [120, 124, 118, 122].map((sys, i) => ({ type: 'bp', timestamp: new Date(now - (i + 1) * 86400000).toISOString(), values: { sys, dia: 80 } }));
+  assert.deepEqual(unusualVsHistory('bp', { sys: 121, dia: 79 }, bp, now), []);
+  assert.equal(unusualVsHistory('bp', { sys: 181, dia: 79 }, bp, now)[0].key, 'sys');
+  const wt = [78.1, 78.4].map((w, i) => ({ type: 'weight', timestamp: new Date(now - (i + 1) * 86400000).toISOString(), values: { weight: w } }));
+  assert.equal(unusualVsHistory('weight', { weight: 49.2 }, wt, now).length, 1);
+  assert.equal(unusualVsHistory('weight', { weight: 78.9 }, wt, now).length, 0);
 });
