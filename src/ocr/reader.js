@@ -5,6 +5,32 @@
 import { readSevenSegment, pickDisplayStack } from './sevenSegment.js';
 import { MEASUREMENT_TYPES } from '../types.js';
 
+/** Rotate by k quarter turns clockwise (swaps width and height for odd k). */
+export function rotateQuarter(img, k) {
+  k = ((k % 4) + 4) % 4;
+  if (!k) return img;
+  const { width: w, height: h, data } = img;
+  const W = k % 2 ? h : w;
+  const H = k % 2 ? w : h;
+  const out = new Uint8ClampedArray(W * H * 4);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let X;
+      let Y;
+      if (k === 1) [X, Y] = [h - 1 - y, x];
+      else if (k === 2) [X, Y] = [w - 1 - x, h - 1 - y];
+      else [X, Y] = [y, w - 1 - x];
+      const i = (y * w + x) * 4;
+      const o = (Y * W + X) * 4;
+      out[o] = data[i];
+      out[o + 1] = data[i + 1];
+      out[o + 2] = data[i + 2];
+      out[o + 3] = 255;
+    }
+  }
+  return { width: W, height: H, data: out };
+}
+
 export function rotateImage(img, degrees) {
   if (!degrees) return img;
   const rad = (degrees * Math.PI) / 180;
@@ -75,7 +101,8 @@ export function readDisplay(img, kind = 'bp', opts = {}) {
   const type = MEASUREMENT_TYPES[kind];
   const passes = [];
   // factor: how much `image` was downscaled; boxes are reported in full-resolution units
-  const attempt = (image, rotation, readOpts, factor = 1) => {
+  // transform: how to get the full-resolution image the boxes refer to (for the zoom pass)
+  const attempt = (image, rotation, readOpts, factor = 1, transform = null) => {
     const { rows } = readSevenSegment(image, readOpts);
     // multi-value displays (blood pressure): the stacked rows; single-value: every candidate row
     const picked = type.fields.length > 1 ? pickDisplayStack(rows) : rows.filter((r) => r.value !== null);
@@ -86,7 +113,7 @@ export function readDisplay(img, kind = 'bp', opts = {}) {
       const used = stack.filter((r) => r === mapped.row);
       if (used.length) stack.splice(0, stack.length, ...used);
     }
-    passes.push({ ...mapped, rows: stack, rotation, box: stack.length ? stackBox(stack) : null, readOpts });
+    passes.push({ ...mapped, rows: stack, rotation, box: stack.length ? stackBox(stack) : null, readOpts, transform });
     return passes[passes.length - 1];
   };
   const good = () => passes.some((p) => p.score >= 1);
@@ -127,6 +154,19 @@ export function readDisplay(img, kind = 'bp', opts = {}) {
     }
   }
 
+  // photo sideways or upside down (e.g. EXIF orientation not applied): quarter turns
+  if (!good()) {
+    const small = downscale(img, 1000);
+    for (const k of [1, 3, 2]) {
+      const r = rotateQuarter(small.image, k);
+      for (const threshold of [0.18, 0.12]) {
+        attempt(r, k * 90, { threshold }, small.factor, (im) => rotateQuarter(im, k));
+        if (good()) break;
+      }
+      if (good()) break;
+    }
+  }
+
   passes.sort((a, b) => b.score - a.score);
   let best = passes[0];
 
@@ -136,21 +176,33 @@ export function readDisplay(img, kind = 'bp', opts = {}) {
     const mw = (b.x1 - b.x0) * 0.35;
     const mh = (b.y1 - b.y0) * (best.rows.length > 1 ? 0.15 : 0.4);
     const crop = { x: b.x0 - mw, y: b.y0 - mh, w: b.x1 - b.x0 + 2 * mw, h: b.y1 - b.y0 + 2 * mh };
+    // multi-row display read only partly (e.g. SYS found, DIA/PUL missed): the other
+    // rows are below and may be wider, so zoom on a larger area around it
+    if (type.fields.length > 1 && best.score < 1) {
+      const rh = Math.max(...best.rows.map((r) => r.height));
+      const missing = type.fields.length - Object.keys(best.values).length;
+      crop.h += missing * rh * 1.6;
+      crop.x -= (b.x1 - b.x0) * 0.3;
+      crop.w += (b.x1 - b.x0) * 0.6;
+    }
     crop.x = Math.max(0, crop.x);
     crop.y = Math.max(0, crop.y);
-    const srcImg = best.rotation ? rotateImage(img, best.rotation) : img;
+    const srcImg = best.transform ? best.transform(img) : best.rotation ? rotateImage(img, best.rotation) : img;
     crop.w = Math.min(srcImg.width - crop.x, crop.w);
     crop.h = Math.min(srcImg.height - crop.y, crop.h);
     // zoom only helps when the display is small in the frame
     if (crop.w < srcImg.width * 0.75 || crop.h < srcImg.height * 0.75) {
       const z = attempt(srcImg, best.rotation, { crop, threshold: best.readOpts.threshold, invert: best.readOpts.invert });
-      // the zoomed read sees the digits at higher resolution, prefer it when as plausible
-      if (z.score >= best.score - 0.05) best = z;
+      // The zoomed read sees the digits at higher resolution: prefer it when it is as
+      // plausible for a complete reading, but only when strictly better for a partial
+      // one (a partial zoom can pick a different row, e.g. pulse read as systolic).
+      if (best.score >= 1 ? z.score >= best.score - 0.05 : z.score > best.score) best = z;
     }
   }
 
   if (!best) return { values: {}, score: 0, confidence: 0, rows: [], box: null, rotation: 0 };
-  const { readOpts, ...result } = best;
+  const { readOpts, transform, ...result } = best;
   if (opts.debug) result.passes = passes.map((p) => ({ score: p.score, values: p.values, rows: p.rows.map((r) => r.text), opts: { ...p.readOpts, crop: p.readOpts.crop && 'crop' }, rotation: p.rotation, box: p.box, crop: p.readOpts.crop }));
+  delete result.transform;
   return result;
 }

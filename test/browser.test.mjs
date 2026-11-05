@@ -50,13 +50,25 @@ try {
     { sys: 134, dia: 85, pulse: 49 },
     { sys: 119, dia: 76, pulse: 62, rotate: 5 },
     { sys: 157, dia: 98, pulse: 102, slant: 0 },
+    { sys: 128, dia: 79, pulse: 64, sideways: true },
   ];
   for (const [i, c] of cases.entries()) {
-    await check(`synthetic display ${c.sys}/${c.dia}/${c.pulse}${c.rotate ? ` rotated ${c.rotate}°` : ''}`, async () => {
+    await check(`synthetic display ${c.sys}/${c.dia}/${c.pulse}${c.rotate ? ` rotated ${c.rotate}°` : ''}${c.sideways ? ' sideways' : ''}`, async () => {
       const got = await page.evaluate(async ({ c, seed }) => {
         const { syntheticDisplay } = await import('/test/synthetic-display.js');
         const { readDisplay } = await import('/src/ocr/reader.js');
-        const cv = syntheticDisplay({ ...c, seed });
+        let cv = syntheticDisplay({ ...c, seed });
+        if (c.sideways) {
+          // photo lying on its side (orientation flag not applied)
+          const r = document.createElement('canvas');
+          r.width = cv.height;
+          r.height = cv.width;
+          const ctx = r.getContext('2d');
+          ctx.translate(r.width, 0);
+          ctx.rotate(Math.PI / 2);
+          ctx.drawImage(cv, 0, 0);
+          cv = r;
+        }
         const img = cv.getContext('2d').getImageData(0, 0, cv.width, cv.height);
         return readDisplay(img, 'bp').values;
       }, { c, seed: i + 7 });
@@ -141,6 +153,39 @@ try {
       await app.waitForTimeout(200);
       await app.screenshot({ path: path.join(shots, '02b-verify-bottom.png') });
     }
+  });
+
+  await check('e2e: phone photo stored sideways with an EXIF orientation flag', async () => {
+    // Phone cameras save portrait photos as landscape pixels + EXIF "rotate 90°".
+    // Build such a JPEG from the upright test photo and upload it like a camera shot.
+    const exifPath = path.join(root, 'node_modules/.cache-exif.jpg');
+    const b64 = await page.evaluate(async (src) => {
+      const bmp = await createImageBitmap(await (await fetch(src)).blob());
+      // store the pixels rotated 90° counter-clockwise; EXIF orientation 6 = rotate 90° CW to view
+      const c = new OffscreenCanvas(bmp.height, bmp.width);
+      const ctx = c.getContext('2d');
+      ctx.translate(0, bmp.width);
+      ctx.rotate(-Math.PI / 2);
+      ctx.drawImage(bmp, 0, 0);
+      const jpg = new Uint8Array(await (await c.convertToBlob({ type: 'image/jpeg', quality: 0.9 })).arrayBuffer());
+      // minimal APP1/Exif segment with Orientation = 6, inserted after SOI
+      const exif = [0xff, 0xe1, 0x00, 0x22, 0x45, 0x78, 0x69, 0x66, 0x00, 0x00, 0x4d, 0x4d, 0x00, 0x2a, 0x00, 0x00, 0x00, 0x08, 0x00, 0x01, 0x01, 0x12, 0x00, 0x03, 0x00, 0x00, 0x00, 0x01, 0x00, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+      const out = new Uint8Array(jpg.length + exif.length);
+      out.set(jpg.subarray(0, 2), 0);
+      out.set(exif, 2);
+      out.set(jpg.subarray(2), 2 + exif.length);
+      let bin = '';
+      for (const x of out) bin += String.fromCharCode(x);
+      return btoa(bin);
+    }, photos.includes('boso-medicus-x.webp') ? '/test/fixtures/private/boso-medicus-x.webp' : null).catch(() => null);
+    if (!b64) return console.log('skip - needs the real photo in test/fixtures/private/');
+    fs.writeFileSync(exifPath, Buffer.from(b64, 'base64'));
+    await app.goto(base + '#/overview'); // leave the previous editor (same URL would keep it)
+    await app.goto(base + '#/add?type=bp');
+    await app.waitForFunction(() => document.querySelector('#in-sys')?.value === '');
+    await app.locator('input[type=file][capture]').setInputFiles(exifPath);
+    await app.waitForFunction(() => document.querySelector('#in-sys')?.value !== '', null, { timeout: 15000 });
+    assert.deepEqual([await app.inputValue('#in-sys'), await app.inputValue('#in-dia'), await app.inputValue('#in-pulse')], ['108', '71', '101']);
   });
 
   await check('e2e: user corrects a value, adds tags and saves', async () => {

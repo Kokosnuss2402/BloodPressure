@@ -196,7 +196,7 @@ function renderOverview(root) {
         h(
           'a',
           { class: `btn big ${i === 0 ? 'primary' : ''}`, href: `#/add?type=${t.id}&camera=1`, 'aria-label': `New ${t.label.toLowerCase()} measurement` },
-          h('span', { class: 'ico', 'aria-hidden': 'true' }, '📷'),
+          h('span', { class: 'ico', 'aria-hidden': 'true' }, t.icon),
           t.tabLabel ?? t.label,
         ),
       ),
@@ -713,15 +713,20 @@ function readInWorker(image, kind, crop) {
   });
 }
 
+// Decode via <img>: every current browser applies the EXIF orientation there
+// (phone cameras store portrait photos sideways + an orientation flag), while
+// createImageBitmap's imageOrientation option is not honoured everywhere.
 async function loadImage(file) {
+  const url = URL.createObjectURL(file);
   try {
-    return await createImageBitmap(file, { imageOrientation: 'from-image' });
-  } catch {
-    const url = URL.createObjectURL(file);
     const img = new Image();
     img.src = url;
     await img.decode();
     return img;
+  } catch {
+    return await createImageBitmap(file, { imageOrientation: 'from-image' });
+  } finally {
+    setTimeout(() => URL.revokeObjectURL(url), 0);
   }
 }
 
@@ -753,6 +758,8 @@ async function renderEditor(root, { arg, params }) {
     note: editing?.note ?? '',
     when: editing ? new Date(editing.timestamp) : new Date(),
     source: editing?.source ?? 'manual',
+    editedAt: {}, // field -> time the user last typed in it
+    readStartedAt: 0,
     photoImg: null, // decoded photo, kept to redraw the analysis canvas when the type changes
     photoCanvas: null, // analysis canvas (1600 px, 2400 px for far-away displays)
     photoBlob: null, // compressed photo for storage
@@ -832,6 +839,7 @@ async function renderEditor(root, { arg, params }) {
   async function runOCR() {
     if (!s.photoCanvas) return;
     s.status = { busy: true, text: 'Reading display…' };
+    s.readStartedAt = Date.now();
     drawPhoto();
     const c = s.photoCanvas;
     const image = c.getContext('2d').getImageData(0, 0, c.width, c.height);
@@ -855,6 +863,7 @@ async function renderEditor(root, { arg, params }) {
   async function runClaude() {
     if (!s.photoCanvas || !state.settings.claudeKey) return;
     s.status = { busy: true, text: 'Asking Claude to read the display…' };
+    s.readStartedAt = Date.now();
     drawPhoto();
     try {
       const { readWithClaude } = await import('./ocr/claudeVision.js');
@@ -884,6 +893,8 @@ async function renderEditor(root, { arg, params }) {
     s.fromPhoto.clear();
     for (const [k, v] of Object.entries(values)) {
       if (!Number.isFinite(v)) continue;
+      // keep what the user typed while this reading was running
+      if ((s.editedAt[k] ?? 0) > s.readStartedAt) continue;
       s.values[k] = v;
       s.fromPhoto.add(k);
     }
@@ -1039,6 +1050,7 @@ async function renderEditor(root, { arg, params }) {
         const n = raw === '' ? undefined : Number(raw);
         s.values[f.key] = Number.isFinite(n) ? f.fromInput(n, st) : undefined;
         s.fromPhoto.delete(f.key);
+        s.editedAt[f.key] = Date.now();
         const box = input.closest('.value-input');
         box.classList.remove('from-photo');
         box.querySelector('.from-photo-tag')?.remove();

@@ -67,14 +67,38 @@ export function segmentsToString(bits) {
   return SEG_NAMES.filter((_, i) => bits & (1 << (6 - i))).join('');
 }
 
-function toGray(img, maxDim) {
-  const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+// maxUp > 1 lets small crops be enlarged (thin segments of a small display separate better)
+function toGray(img, maxDim, maxUp = 1) {
+  const scale = Math.min(maxUp, maxDim / Math.max(img.width, img.height));
   const w = Math.max(1, Math.round(img.width * scale));
   const h = Math.max(1, Math.round(img.height * scale));
   const gray = new Float32Array(w * h);
   const src = img.data;
   const sx = img.width / w;
   const sy = img.height / h;
+  if (scale > 1) {
+    // enlarging: bilinear interpolation of the luminance
+    const lum = (x, y) => {
+      const i = (y * img.width + x) * 4;
+      return 0.299 * src[i] + 0.587 * src[i + 1] + 0.114 * src[i + 2];
+    };
+    for (let y = 0; y < h; y++) {
+      const fy = Math.min(img.height - 1, Math.max(0, (y + 0.5) * sy - 0.5));
+      const y0 = Math.floor(fy);
+      const y1 = Math.min(img.height - 1, y0 + 1);
+      const ty = fy - y0;
+      for (let x = 0; x < w; x++) {
+        const fx = Math.min(img.width - 1, Math.max(0, (x + 0.5) * sx - 0.5));
+        const x0 = Math.floor(fx);
+        const x1 = Math.min(img.width - 1, x0 + 1);
+        const tx = fx - x0;
+        const top = lum(x0, y0) * (1 - tx) + lum(x1, y0) * tx;
+        const bot = lum(x0, y1) * (1 - tx) + lum(x1, y1) * tx;
+        gray[y * w + x] = top * (1 - ty) + bot * ty;
+      }
+    }
+    return { gray, w, h, scale };
+  }
   for (let y = 0; y < h; y++) {
     const y0 = Math.floor(y * sy);
     const y1 = Math.max(y0 + 1, Math.floor((y + 1) * sy));
@@ -505,7 +529,7 @@ function findDecimal(row, cands, w, slant) {
  */
 export function readSevenSegment(img, opts = {}) {
   const src = opts.crop ? cropImage(img, opts.crop) : img;
-  const { gray, w, h, scale } = toGray(src, opts.maxDim ?? 900);
+  const { gray, w, h, scale } = toGray(src, opts.maxDim ?? 900, opts.crop ? 2 : 1);
   // LED / backlit displays: bright segments on a dark background
   if (opts.invert) for (let i = 0; i < gray.length; i++) gray[i] = 255 - gray[i];
   const win = Math.round(Math.max(w, h) / 10);
