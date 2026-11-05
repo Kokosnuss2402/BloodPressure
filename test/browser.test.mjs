@@ -112,7 +112,12 @@ try {
     assert.equal(await app.inputValue('#in-dia'), String(expected.dia));
     assert.equal(await app.inputValue('#in-pulse'), String(expected.pulse));
     assert.equal(await app.locator('.value-input.from-photo').count(), 3);
-    if (shots) await app.screenshot({ path: path.join(shots, '02-verify.png'), fullPage: true });
+    if (shots) {
+      await app.screenshot({ path: path.join(shots, '02a-verify-top.png') });
+      await app.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+      await app.waitForTimeout(200);
+      await app.screenshot({ path: path.join(shots, '02b-verify-bottom.png') });
+    }
   });
 
   await check('e2e: user corrects a value, adds tags and saves', async () => {
@@ -144,7 +149,12 @@ try {
     await app.goto(base + '#/overview');
     await app.reload();
     await app.waitForSelector('.chart svg');
-    if (shots) await app.screenshot({ path: path.join(shots, '03-overview.png'), fullPage: true });
+    if (shots) {
+      await app.screenshot({ path: path.join(shots, '03a-overview.png') });
+      await app.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+      await app.waitForTimeout(200);
+      await app.screenshot({ path: path.join(shots, '03b-overview-bottom.png') });
+    }
     await app.goto(base + '#/history');
     await app.waitForSelector('.entry');
     const first = await app.locator('.entry').first().innerText();
@@ -177,7 +187,7 @@ try {
     await app.waitForSelector('.chart svg');
     const bg = await app.evaluate(() => getComputedStyle(document.body).backgroundColor);
     assert.equal(bg, 'rgb(17, 17, 16)');
-    if (shots) await app.screenshot({ path: path.join(shots, '06-charts-dark.png'), fullPage: true });
+    if (shots) await app.screenshot({ path: path.join(shots, '06-charts-dark.png') });
     await app.goto(base + '#/settings');
     await app.waitForSelector('.switch');
     if (shots) await app.screenshot({ path: path.join(shots, '07-settings-dark.png'), fullPage: true });

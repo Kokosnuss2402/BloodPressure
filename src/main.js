@@ -73,8 +73,7 @@ const r0 = (v) => (Number.isFinite(v) ? Math.round(v) : '–');
 
 function levelPill(level) {
   if (!level) return null;
-  const dots = h('span', { class: 'dots', 'aria-hidden': 'true' }, [0, 1, 2, 3, 4, 5].map((i) => h('i', { class: i <= level.rank ? 'on' : '' })));
-  return h('span', { class: `pill lvl-${level.rank}`, title: level.label }, dots, level.label);
+  return h('span', { class: `pill lvl-${level.rank}`, title: level.label }, level.label);
 }
 
 function download(filename, text, type) {
@@ -204,7 +203,12 @@ function renderOverview(root) {
     const avg = averages(week, t);
     const dSys = trend(bp, 'sys');
     const dDia = trend(bp, 'dia');
-    const trendTxt = (d) => (Number.isFinite(d) ? `${d > 0 ? '▲ +' : d < 0 ? '▼ ' : '± '}${Math.round(d)} vs. prior week` : '');
+    const dPul = trend(bp, 'pulse');
+    const trendTxt = (d) => {
+      if (!Number.isFinite(d)) return '';
+      const r = Math.round(d);
+      return r === 0 ? '±0' : `${r > 0 ? '▲ +' : '▼ −'}${Math.abs(r)}`;
+    };
 
     const chartBox = h('div');
     root.append(
@@ -227,13 +231,13 @@ function renderOverview(root) {
       h(
         'div',
         { class: 'card' },
-        h('div', { class: 'card-head' }, h('h2', {}, '7-day average'), h('span', { class: 'muted small' }, `${avg.count} readings`)),
+        h('div', { class: 'card-head' }, h('h2', {}, '7-day average'), h('span', { class: 'muted small' }, `${avg.count} readings · ▲▼ vs. prior week`)),
         h(
           'div',
           { class: 'grid-2', style: { gridTemplateColumns: 'repeat(3, 1fr)' } },
           h('div', { class: 'stat' }, h('div', { class: 'label' }, 'Systolic'), h('div', { class: 'value' }, r0(avg.sys)), h('div', { class: 'delta' }, trendTxt(dSys))),
           h('div', { class: 'stat' }, h('div', { class: 'label' }, 'Diastolic'), h('div', { class: 'value' }, r0(avg.dia)), h('div', { class: 'delta' }, trendTxt(dDia))),
-          h('div', { class: 'stat' }, h('div', { class: 'label' }, 'Pulse'), h('div', { class: 'value' }, r0(avg.pulse)), h('div', { class: 'delta' }, '/min')),
+          h('div', { class: 'stat' }, h('div', { class: 'label' }, 'Pulse'), h('div', { class: 'value' }, r0(avg.pulse)), h('div', { class: 'delta' }, trendTxt(dPul))),
         ),
       ),
       h(
@@ -928,7 +932,9 @@ async function renderEditor(root, { arg, params }) {
         const n = raw === '' ? undefined : Number(raw);
         s.values[f.key] = isGlu && Number.isFinite(n) ? toMgdl(n, unit) : Number.isFinite(n) ? Math.round(n) : undefined;
         s.fromPhoto.delete(f.key);
-        input.closest('.value-input').classList.remove('from-photo');
+        const box = input.closest('.value-input');
+        box.classList.remove('from-photo');
+        box.querySelector('.from-photo-tag')?.remove();
         drawErrors();
       });
       valueInputs.append(
@@ -937,7 +943,8 @@ async function renderEditor(root, { arg, params }) {
           { class: `value-input ${s.fromPhoto.has(f.key) ? 'from-photo' : ''}` },
           h('label', { for: `in-${f.key}` }, f.short),
           input,
-          h('div', { class: 'unit' }, isGlu ? unit : f.unit, s.fromPhoto.has(f.key) ? ' · from photo' : ''),
+          h('div', { class: 'unit' }, isGlu ? unit : f.unit),
+          s.fromPhoto.has(f.key) ? h('div', { class: 'from-photo-tag' }, '◉ from photo') : null,
         ),
       );
     }

@@ -441,10 +441,11 @@ export function readSevenSegment(img, opts = {}) {
     .filter((r) => r.digits.length >= 1)
     .map((r) => ({
       ...r,
-      // report boxes in source-image pixel units
+      // boxes were computed in de-slanted space (x' = x - slant*y): map back to
+      // the image and report them in source-image pixel units
       box: {
-        x0: r.box.x0 / scale + (opts.crop?.x ?? 0),
-        x1: r.box.x1 / scale + (opts.crop?.x ?? 0),
+        x0: Math.min(r.box.x0 + slant * r.box.y0, r.box.x0 + slant * r.box.y1) / scale + (opts.crop?.x ?? 0),
+        x1: Math.max(r.box.x1 + slant * r.box.y0, r.box.x1 + slant * r.box.y1) / scale + (opts.crop?.x ?? 0),
         y0: r.box.y0 / scale + (opts.crop?.y ?? 0),
         y1: r.box.y1 / scale + (opts.crop?.y ?? 0),
       },

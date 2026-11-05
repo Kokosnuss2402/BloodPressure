@@ -518,6 +518,12 @@ main {
   font-size: 0.75rem;
   color: var(--text-3);
 }
+.value-input .from-photo-tag {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--accent);
+  white-space: nowrap;
+}
 
 .chips {
   display: flex;
@@ -891,15 +897,16 @@ table.stats th {
 
 .sticky-actions {
   position: sticky;
-  bottom: calc(var(--tabbar-h) + var(--safe-b) + 8px);
+  bottom: calc(var(--tabbar-h) + var(--safe-b));
   display: flex;
   gap: 10px;
-  padding-top: 8px;
+  margin: 0 -16px;
+  padding: 10px 16px 12px;
   z-index: 3;
+  background: linear-gradient(to bottom, transparent, var(--bg) 14px);
 }
 .sticky-actions .btn {
   flex: 1;
-  box-shadow: 0 4px 16px rgb(0 0 0 / 0.12);
 }
 
 .empty {

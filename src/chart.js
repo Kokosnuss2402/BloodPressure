@@ -125,7 +125,9 @@ export function renderChart(container, cfg) {
     }
 
     // series
-    const showMarkers = series.every((s) => s.points.length <= 90);
+    // markers only when there is room for them, otherwise they chop up the line
+    const maxPts = Math.max(...series.map((s) => s.points.length));
+    const showMarkers = maxPts <= Math.max(2, iw / 18);
     for (const s of series) {
       const pts = [...s.points].sort((a, b) => a.t - b.t);
       const gS = el('g', { class: `series ${s.cls}` }, svg);
@@ -133,6 +135,10 @@ export function renderChart(container, cfg) {
         el('path', { d: pts.map((p, i) => `${i ? 'L' : 'M'}${x(p.t).toFixed(1)},${y(p.v).toFixed(1)}`).join(' '), class: 'line' }, gS);
       }
       if (showMarkers || pts.length === 1) for (const p of pts) marker(s.shape, x(p.t), y(p.v), 4, 'marker', gS);
+      else {
+        const last = pts[pts.length - 1];
+        marker(s.shape, x(last.t), y(last.v), 4, 'marker', gS);
+      }
       // direct label at the last point
       if (series.length > 1) {
         const last = pts[pts.length - 1];
@@ -150,7 +156,7 @@ export function renderChart(container, cfg) {
     // hover / touch layer
     const hover = el('g', { class: 'hover', visibility: 'hidden' }, svg);
     const cross = el('line', { y1: m.t, y2: m.t + ih, class: 'crosshair' }, hover);
-    const hoverMarks = series.map((s) => marker(s.shape, 0, 0, 5.5, `marker hover-marker ${s.cls}`, hover));
+    const hoverMarks = series.map((s) => marker(s.shape, 0, 0, 5.5, 'marker hover-marker', el('g', { class: `series ${s.cls}` }, hover)));
     const tip = document.createElement('div');
     tip.className = 'chart-tip';
     tip.hidden = true;
@@ -203,11 +209,6 @@ export function renderChart(container, cfg) {
         const p = series.flatMap((s) => s.points).find((pp) => pp.t === current);
         if (p?.ref) cfg.onSelect(p.ref);
       });
-    // hover markers were drawn at origin; shapes are centred there via translate
-    hoverMarks.forEach((mk, i) => {
-      mk.remove();
-      hoverMarks[i] = marker(series[i].shape, 0, 0, 5.5, `marker hover-marker`, el('g', { class: `series ${series[i].cls}` }, hover));
-    });
 
     container.replaceChildren(svg, tip);
   };
