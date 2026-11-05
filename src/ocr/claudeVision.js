@@ -9,9 +9,9 @@ const SCHEMAS = {
     type: 'object',
     properties: {
       readable: { type: 'boolean', description: 'false if no blood pressure reading is visible' },
-      systolic: { type: ['integer', 'null'] },
-      diastolic: { type: ['integer', 'null'] },
-      pulse: { type: ['integer', 'null'] },
+      systolic: { anyOf: [{ type: 'integer' }, { type: 'null' }] },
+      diastolic: { anyOf: [{ type: 'integer' }, { type: 'null' }] },
+      pulse: { anyOf: [{ type: 'integer' }, { type: 'null' }] },
     },
     required: ['readable', 'systolic', 'diastolic', 'pulse'],
     additionalProperties: false,
@@ -20,8 +20,8 @@ const SCHEMAS = {
     type: 'object',
     properties: {
       readable: { type: 'boolean', description: 'false if no glucose reading is visible' },
-      value: { type: ['number', 'null'], description: 'number exactly as displayed' },
-      unit: { type: ['string', 'null'], enum: ['mg/dL', 'mmol/L', null] },
+      value: { anyOf: [{ type: 'number' }, { type: 'null' }], description: 'number exactly as displayed' },
+      unit: { anyOf: [{ type: 'string', enum: ['mg/dL', 'mmol/L'] }, { type: 'null' }] },
     },
     required: ['readable', 'value', 'unit'],
     additionalProperties: false,

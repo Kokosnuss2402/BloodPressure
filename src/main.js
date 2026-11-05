@@ -16,7 +16,7 @@ import { MEASUREMENT_TYPES, GLUCOSE_CONTEXTS, DEFAULT_TAGS, formatGlucose, toMgd
 import { toCSV, localDate } from './csv.js';
 import { averages, byTimeOfDay, inLastDays, trend, allTags } from './stats.js';
 import { renderChart, markerSVG } from './chart.js';
-import { syncNow, scheduleSync, getSyncConfig, testConnection, resetSyncState } from './sync.js';
+import { syncNow, scheduleSync, getSyncConfig, testConnection, resetSyncState, setPassphrase, forgetKey } from './sync.js';
 
 // ---------------------------------------------------------------- helpers
 
@@ -49,6 +49,8 @@ function toast(msg) {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => ($toast.hidden = true), 2600);
 }
+
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 
 const fmtTime = (d) => d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
 const fmtDay = (d) => {
@@ -132,7 +134,13 @@ async function updateSyncIndicator(text) {
   if (text) $sync.textContent = text === 'Backed up' ? '☁ Backed up' : `☁ ${text}`;
   else {
     const last = await getSetting('syncLastResult', null);
-    $sync.textContent = last ? (last.ok ? `☁ ${timeAgo(new Date(last.at))}` : '☁ Backup failed') : '☁ Not synced yet';
+    $sync.textContent = !cfg.key
+      ? '🔒 Backup locked'
+      : last
+        ? last.ok
+          ? `☁ ${timeAgo(new Date(last.at))}`
+          : '☁ Backup failed'
+        : '☁ Not synced yet';
   }
 }
 
@@ -320,7 +328,7 @@ function bpChartConfig(list, domain, height = 220) {
         tipHeader(t) +
         rows.map((r) => tipRow(r.series.cls, r.series.shape, r.series.short, r.point.v)).join('') +
         (Number.isFinite(m?.values.pulse) ? `<div class="tip-row muted">♥ ${m.values.pulse} /min</div>` : '') +
-        (m?.tags?.length ? `<div class="muted">${m.tags.map((x) => '#' + x).join(' ')}</div>` : '')
+        (m?.tags?.length ? `<div class="muted">${m.tags.map((x) => '#' + esc(x)).join(' ')}</div>` : '')
       );
     },
     onSelect: (m) => (location.hash = `#/edit/${m.id}`),
@@ -734,6 +742,10 @@ async function renderEditor(root, { arg, params }) {
     try {
       const { result, ms } = await readInWorker(image, s.type, s.crop);
       s.overlay = result;
+      // mmol/L meters show one decimal ("5.6"); the decimal point is not read, so 56 -> 5.6 mmol/L
+      if (s.type === 'glucose' && unit === 'mmol/L' && Number.isFinite(result.values.glucose)) {
+        result.values.glucose = toMgdl(result.values.glucose / 10, 'mmol/L');
+      }
       s.ocrRaw = { ...result.values, engine: 'on-device', score: result.score };
       applyRecognized(result.values);
       const n = Object.keys(result.values).length;
@@ -1203,12 +1215,49 @@ async function renderSettings(root) {
     await resetSyncState(); // new server -> full re-sync
   });
   tokIn.addEventListener('change', saveCfg);
+  // --- end-to-end encryption passphrase
+  const passIn = h('input', { type: 'password', placeholder: 'Backup passphrase (min. 8 characters)', autocomplete: 'new-password', minlength: '8' });
+  const keyState = h('div', { class: 'small' });
+  const keyBtn = h('button', { class: 'btn small' });
+  let hasKey = !!cfg.key;
+  const showKeyState = () => {
+    keyState.textContent = hasKey
+      ? '🔒 Unlocked on this device. Records are encrypted (AES-256-GCM) before upload.'
+      : 'Choose a passphrase on your first device and enter the same one on every other device. It is never stored or uploaded – if you lose it, the backup cannot be read.';
+    keyBtn.textContent = hasKey ? 'Forget key on this device' : 'Set / unlock passphrase';
+    passIn.closest('label')?.toggleAttribute('hidden', hasKey);
+  };
+  keyBtn.addEventListener('click', async () => {
+    if (hasKey) {
+      if (!confirm('Remove the encryption key from this device? Backup pauses until you enter the passphrase again.')) return;
+      await forgetKey();
+      hasKey = false;
+      showKeyState();
+      return;
+    }
+    await saveCfg();
+    keyBtn.disabled = true;
+    keyState.textContent = 'Deriving key…';
+    try {
+      await setPassphrase(await getSyncConfig(), passIn.value);
+      passIn.value = '';
+      hasKey = true;
+      toast('Passphrase set – backup is end-to-end encrypted');
+      if (enabled.checked) doSync();
+    } catch (e) {
+      toast(e.message);
+    }
+    keyBtn.disabled = false;
+    showKeyState();
+  });
+
   const enabled = h('input', { type: 'checkbox', class: 'switch', checked: cfg.enabled, 'aria-label': 'Enable cloud backup' });
   enabled.addEventListener('change', async () => {
     await saveCfg();
     await setSetting('syncEnabled', enabled.checked);
     updateSyncIndicator();
-    if (enabled.checked) doSync();
+    if (enabled.checked && hasKey) doSync();
+    else if (enabled.checked) toast('Now set the backup passphrase below');
   });
   async function doSync() {
     await saveCfg();
@@ -1229,9 +1278,12 @@ async function renderSettings(root) {
     h(
       'div',
       { class: 'card stack' },
-      h('div', { class: 'setting', style: { padding: 0, border: 0 } }, h('div', {}, 'Back up to cloud', h('div', { class: 'desc' }, 'Measurements, tags and notes are synced to your own Cloudflare D1 database. Photos stay on this device.')), enabled),
+      h('div', { class: 'setting', style: { padding: 0, border: 0 } }, h('div', {}, 'Back up to cloud', h('div', { class: 'desc' }, 'Measurements, tags and notes are encrypted on this device and synced to your own Cloudflare D1 database. Photos stay on this device.')), enabled),
       h('label', { class: 'field' }, h('span', {}, 'Backup server URL'), urlIn),
       h('label', { class: 'field' }, h('span', {}, 'Sync token'), tokIn),
+      h('label', { class: 'field' }, h('span', {}, 'Encryption passphrase'), passIn),
+      keyState,
+      keyBtn,
       h(
         'div',
         { class: 'row' },
@@ -1256,6 +1308,7 @@ async function renderSettings(root) {
       syncStatus,
     ),
   );
+  showKeyState();
 
   // --- claude
   const keyIn = h('input', { type: 'password', value: st.claudeKey, placeholder: 'sk-ant-…', autocomplete: 'off' });
@@ -1279,11 +1332,17 @@ async function renderSettings(root) {
     try {
       const data = JSON.parse(await f.text());
       const recs = (data.measurements ?? data).filter((r) => r && r.id && r.type && r.timestamp);
-      await bulkPut(recs.map((r) => ({ ...r, updatedAt: r.updatedAt ?? new Date().toISOString(), hasPhoto: undefined })));
+      const local = new Map((await listAllRecords()).map((m) => [m.id, m]));
+      const now = new Date().toISOString();
+      // keep newer local versions; stamp imported ones as changed now so they reach the backup
+      const toPut = recs
+        .filter((r) => !local.has(r.id) || (r.updatedAt ?? '') > (local.get(r.id).updatedAt ?? ''))
+        .map((r) => ({ ...r, updatedAt: now, hasPhoto: local.get(r.id)?.hasPhoto || undefined }));
+      await bulkPut(toPut);
       if (Array.isArray(data.tags)) await updateSetting('tags', [...new Set([...state.settings.tags, ...data.tags])]);
       await reload();
       afterChange();
-      toast(`Imported ${recs.length} measurements`);
+      toast(`Imported ${toPut.length} of ${recs.length} measurements`);
       route();
     } catch (e) {
       toast(`Import failed: ${e.message}`);
@@ -1315,9 +1374,12 @@ async function renderSettings(root) {
         {
           class: 'btn block danger',
           onclick: async () => {
-            if (!confirm('Delete ALL measurements and photos stored in this browser? The cloud backup is not touched.')) return;
+            if (!confirm('Delete ALL measurements and photos stored in this browser? Cloud backup is switched off on this device; the backup itself is not touched.')) return;
             await clearAll();
             await resetSyncState();
+            // otherwise the next sync would download everything again
+            await setSetting('syncEnabled', false);
+            updateSyncIndicator();
             await reload();
             toast('Local data deleted');
             route();

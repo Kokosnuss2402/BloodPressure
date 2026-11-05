@@ -67,6 +67,12 @@ test('CSV export escapes values and includes pulse and tags', () => {
   assert.match(semi, /;99;5,5;/); // decimal comma with semicolon separator
 });
 
+test('CSV export neutralises spreadsheet formulas in free text', () => {
+  const csv = toCSV([{ id: '3', type: 'bp', timestamp: '2026-11-05T09:00:00.000Z', values: { sys: 120, dia: 80 }, tags: ['=cmd'], note: '=HYPERLINK("http://x")' }]);
+  assert.match(csv, /,'=cmd,/);
+  assert.match(csv, /"'=HYPERLINK\(""http:\/\/x""\)"/);
+});
+
 test('stats: averages, trends, tags, time of day', () => {
   const now = Date.parse('2026-11-05T12:00:00Z');
   const mk = (daysAgo, sys, dia, tags = []) => ({ type: 'bp', timestamp: new Date(now - daysAgo * 86400000).toISOString(), values: { sys, dia }, tags });

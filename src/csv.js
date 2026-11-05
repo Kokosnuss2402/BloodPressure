@@ -4,6 +4,9 @@ const pad = (n) => String(n).padStart(2, '0');
 export const localDate = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 export const localTime = (d) => `${pad(d.getHours())}:${pad(d.getMinutes())}`;
 
+// Free text starting with = + - @ would be run as a formula by spreadsheet apps.
+const defuse = (s) => (/^[=+\-@\t\r]/.test(s) ? `'${s}` : s);
+
 function cell(v, delim) {
   if (v == null) return '';
   const s = String(v);
@@ -55,8 +58,8 @@ export function toCSV(measurements, opts = {}) {
       Number.isFinite(v.glucose) ? num(v.glucose / MGDL_PER_MMOL, 1) : '',
       ctx?.label ?? '',
       cat?.label ?? '',
-      (m.tags ?? []).join('; '),
-      m.note ?? '',
+      defuse((m.tags ?? []).join('; ')),
+      defuse(m.note ?? ''),
       m.source ?? '',
       m.timestamp,
     ];

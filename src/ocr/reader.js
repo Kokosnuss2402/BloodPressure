@@ -35,6 +35,25 @@ export function rotateImage(img, degrees) {
   return { width: w, height: h, data: out };
 }
 
+/** Nearest-neighbour downscale (rotation passes don't need full resolution). */
+function downscale(img, maxDim) {
+  const f = Math.max(img.width, img.height) / maxDim;
+  if (f <= 1) return { image: img, factor: 1 };
+  const w = Math.round(img.width / f);
+  const h = Math.round(img.height / f);
+  const out = new Uint8ClampedArray(w * h * 4);
+  for (let y = 0; y < h; y++) {
+    const sy = Math.min(img.height - 1, Math.floor(y * f));
+    for (let x = 0; x < w; x++) {
+      const sx = Math.min(img.width - 1, Math.floor(x * f));
+      out.set(img.data.subarray((sy * img.width + sx) * 4, (sy * img.width + sx) * 4 + 4), (y * w + x) * 4);
+    }
+  }
+  return { image: { width: w, height: h, data: out }, factor: f };
+}
+
+const scaleBox = (b, f) => (f === 1 ? b : { x0: b.x0 * f, x1: b.x1 * f, y0: b.y0 * f, y1: b.y1 * f });
+
 function stackBox(stack) {
   return {
     x0: Math.min(...stack.map((r) => r.box.x0)),
@@ -54,9 +73,10 @@ function stackBox(stack) {
 export function readDisplay(img, kind = 'bp', opts = {}) {
   const type = MEASUREMENT_TYPES[kind];
   const passes = [];
-  const attempt = (image, rotation, readOpts) => {
+  // factor: how much `image` was downscaled; boxes are reported in full-resolution units
+  const attempt = (image, rotation, readOpts, factor = 1) => {
     const { rows } = readSevenSegment(image, readOpts);
-    const stack = pickDisplayStack(rows);
+    const stack = pickDisplayStack(rows).map((r) => ({ ...r, box: scaleBox(r.box, factor), height: r.height * factor }));
     const mapped = type.fromDisplayRows(stack);
     passes.push({ ...mapped, rows: stack, rotation, box: stack.length ? stackBox(stack) : null, readOpts });
     return passes[passes.length - 1];
@@ -69,10 +89,13 @@ export function readDisplay(img, kind = 'bp', opts = {}) {
     if (good()) break;
   }
   if (!good()) {
+    const small = downscale(img, 1000);
+    const c = opts.crop;
+    const crop = c && { x: c.x / small.factor, y: c.y / small.factor, w: c.w / small.factor, h: c.h / small.factor };
     for (const rot of [-6, 6, -10, 10]) {
-      const r = rotateImage(img, rot);
+      const r = rotateImage(small.image, rot);
       for (const threshold of [0.18, 0.12]) {
-        attempt(r, rot, { ...base, threshold });
+        attempt(r, rot, { crop, threshold }, small.factor);
         if (good()) break;
       }
       if (good()) break;

@@ -20,6 +20,11 @@ the values, add tags, then save.
 - ☁ **Cloud backup** to your own **Cloudflare D1** database. The browser database (IndexedDB) stays
   the main store. Two-way sync lets a second device restore your data, and deletions sync too.
   Photos never leave the device.
+- 🔒 **End-to-end encrypted backup**: every record is encrypted in the browser with AES-256-GCM, using
+  a key derived from your backup passphrase (PBKDF2-SHA-256, 600,000 iterations) and bound to the
+  record id. D1 stores only the id, the time of the last change, a deleted flag and the ciphertext.
+  The Worker refuses unencrypted records. The passphrase is never stored or uploaded: each device
+  keeps only a non-exportable key. If you lose the passphrase, the backup can't be read.
 - ✨ Optional: let **Claude** read difficult displays with your own Anthropic API key (off by default).
 - 📱 Installable PWA, works offline, light & dark mode.
 
@@ -37,8 +42,12 @@ the values, add tags, then save.
 2. Open the Worker, go to **Settings → Variables and Secrets** and add a **secret** named
    `SYNC_TOKEN` with a long random value (e.g. from `openssl rand -base64 32`).
 3. Open the app at the Worker URL (`https://vitals-log.<you>.workers.dev`). Go to
-   **Settings → Cloud backup**, enter the same token and switch backup on. Leave the URL empty
-   when the app runs on the same Worker. Repeat on other devices to restore and sync.
+   **Settings → Cloud backup**, enter the same token, switch backup on and choose an **encryption
+   passphrase**. Leave the URL empty when the app runs on the same Worker. On other devices, enter
+   the same token and passphrase to restore and sync.
+
+   To start over with a new passphrase, empty the backup with
+   `npx wrangler d1 execute vitals-log --remote --command "DELETE FROM measurements; DELETE FROM meta;"`.
 4. Recommended, because this is health data: put the Worker behind **Cloudflare Access**
    (Zero Trust → Access → Applications) so that only you can open it.
 
@@ -69,6 +78,6 @@ data isn't committed). Name them `<sys>-<dia>-<pulse>.jpg`, e.g. `128-82-64.jpg`
 | `src/ocr/reader.js` | multi-pass reading (thresholds, rotation, zoom on display) + plausibility scoring |
 | `src/ocr/claudeVision.js` | optional Claude vision fallback (bring your own key) |
 | `src/types.js` | measurement types (blood pressure, blood sugar): fields, ranges, categories. Add new types here |
-| `src/db.js`, `src/sync.js` | IndexedDB storage and two-way sync with the D1 backup |
+| `src/db.js`, `src/sync.js`, `src/crypto.js` | IndexedDB storage, end-to-end encrypted two-way sync with the D1 backup |
 | `src/chart.js` | responsive SVG charts with touch tooltips |
 | `worker/index.js` | Cloudflare Worker: static app + `/api/sync` backed by D1 |
