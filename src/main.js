@@ -126,6 +126,7 @@ async function reload() {
 const tagList = () => allTags(state.measurements, state.settings.tags);
 
 function afterChange() {
+  if (!navigator.onLine) updateSyncIndicator(); // shows "offline – saved on device"; syncs when back online
   scheduleSync((r, err) => updateSyncIndicator(err ? 'Backup failed' : 'Backed up'));
 }
 async function updateSyncIndicator(text) {
@@ -136,7 +137,9 @@ async function updateSyncIndicator(text) {
     const last = await getSetting('syncLastResult', null);
     $sync.textContent = !cfg.key
       ? '🔒 Backup locked'
-      : last
+      : !navigator.onLine
+        ? '☁ Offline – saved on device'
+        : last
         ? last.ok
           ? `☁ ${timeAgo(new Date(last.at))}`
           : '☁ Backup failed'
@@ -610,8 +613,11 @@ function tagCompareCard(list, type) {
 
 let worker = null;
 let workerSeq = 0;
-function readInWorker(image, kind, crop) {
+function warmReader() {
   worker ??= new Worker(new URL('./ocr/worker.js', import.meta.url), { type: 'module' });
+}
+function readInWorker(image, kind, crop) {
+  warmReader();
   const id = ++workerSeq;
   return new Promise((resolve, reject) => {
     const onMsg = (e) => {
@@ -1399,20 +1405,35 @@ async function boot() {
   await reload();
   await route();
   updateSyncIndicator();
-  // initial background sync (pull changes from other devices)
-  const cfg = await getSyncConfig();
-  if (cfg.enabled && cfg.token && navigator.onLine) {
-    syncNow()
-      .then(async (r) => {
-        updateSyncIndicator('Backed up');
-        if (r.pulled) {
-          await reload();
-          if (!location.hash.startsWith('#/add') && !location.hash.startsWith('#/edit')) route();
-        }
-      })
-      .catch(() => updateSyncIndicator('Backup failed'));
+  if ('serviceWorker' in navigator && import.meta.env.PROD) {
+    navigator.serviceWorker
+      .register('./sw.js')
+      .then(() => navigator.serviceWorker.ready)
+      // start the photo reader once so the service worker caches it for offline use
+      .then(() => warmReader())
+      .catch(() => {});
   }
-  if ('serviceWorker' in navigator && import.meta.env.PROD) navigator.serviceWorker.register('./sw.js').catch(() => {});
+
+  // Offline changes are kept locally; sync them as soon as the connection is back,
+  // and pick up changes from other devices when the app returns to the foreground.
+  const syncAndRefresh = async () => {
+    const c = await getSyncConfig();
+    if (!c.enabled || !c.token || !c.key || !navigator.onLine) return;
+    try {
+      const r = await syncNow();
+      updateSyncIndicator('Backed up');
+      if (r.pulled) {
+        await reload();
+        if (!location.hash.startsWith('#/add') && !location.hash.startsWith('#/edit')) route();
+      }
+    } catch {
+      updateSyncIndicator('Backup failed');
+    }
+  };
+  window.addEventListener('online', syncAndRefresh);
+  window.addEventListener('offline', () => updateSyncIndicator());
+  document.addEventListener('visibilitychange', () => document.visibilityState === 'visible' && syncAndRefresh());
+  syncAndRefresh(); // initial sync (push offline changes, pull other devices)
 }
 
 boot();

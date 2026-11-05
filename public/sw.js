@@ -1,9 +1,21 @@
 // Offline support: network-first for pages, cache-first for static assets.
 // API calls (cloud backup) and cross-origin requests are never cached.
-const CACHE = 'vitals-log-v1';
+const CACHE = 'vitals-log-v2';
 
+const SHELL = ['./', './manifest.webmanifest', './icon.svg', './icon-192.png'];
+
+// Cache the app shell plus every asset index.html references, so the app also
+// opens offline after the very first visit (those assets load before the SW runs).
 self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(['./', './index.html', './manifest.webmanifest', './icon.svg'])));
+  e.waitUntil(
+    (async () => {
+      const cache = await caches.open(CACHE);
+      await cache.addAll(SHELL);
+      const html = await (await cache.match('./')).text();
+      const assets = [...html.matchAll(/(?:src|href)="(\.?\/?assets\/[^"]+)"/g)].map((m) => m[1]);
+      await cache.addAll(assets);
+    })(),
+  );
   self.skipWaiting();
 });
 
@@ -21,10 +33,10 @@ self.addEventListener('fetch', (e) => {
       fetch(e.request)
         .then((res) => {
           const copy = res.clone();
-          caches.open(CACHE).then((c) => c.put('./index.html', copy));
+          caches.open(CACHE).then((c) => c.put('./', copy));
           return res;
         })
-        .catch(() => caches.match('./index.html')),
+        .catch(() => caches.match('./')),
     );
     return;
   }

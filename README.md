@@ -26,7 +26,8 @@ the values, add tags, then save.
   The Worker refuses unencrypted records. The passphrase is never stored or uploaded: each device
   keeps only a non-exportable key. If you lose the passphrase, the backup can't be read.
 - ✨ Optional: let **Claude** read difficult displays with your own Anthropic API key (off by default).
-- 📱 Installable PWA, works offline, light & dark mode.
+- 📱 Installable PWA that **works fully offline**, including reading photos: measurements are saved on the
+  device and synced to the backup automatically once you're back online. Light & dark mode.
 
 > Categories are for information only and are not a diagnosis.
 
