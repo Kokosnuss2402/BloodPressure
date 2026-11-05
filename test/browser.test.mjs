@@ -289,8 +289,9 @@ try {
       assert.ok((await app.locator('#view .entry').count()) >= 1, `${tile}: recent entries listed`);
       assert.ok(!/\bnull\b|\[object/.test(await app.locator('#view').innerText()), `${tile}: no stray text`);
     }
-    // the choice is remembered
+    // the choice is remembered (wait until it is stored before reloading)
     await app.locator('.quick-actions button', { hasText: 'Sugar' }).click();
+    await app.waitForFunction(async () => (await (await import('/src/db.js')).getSetting('overviewType')) === 'glucose');
     await app.reload();
     await app.waitForSelector('#view .card h2:text-is("Latest blood sugar")');
     await app.locator('.quick-actions button', { hasText: 'Pressure' }).click();
