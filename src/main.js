@@ -16,6 +16,7 @@ import { MEASUREMENT_TYPES, TYPE_LIST, GLUCOSE_CONTEXTS, DEFAULT_TAGS, formatGlu
 import { toCSV, localDate } from './csv.js';
 import { averages, byTimeOfDay, inLastDays, trend, allTags } from './stats.js';
 import { renderChart, markerSVG } from './chart.js';
+import { icon, iconSVG } from './icons.js';
 import { syncNow, scheduleSync, getSyncConfig, testConnection, resetSyncState, setPassphrase, forgetKey } from './sync.js';
 
 // ---------------------------------------------------------------- helpers
@@ -139,18 +140,15 @@ function afterChange() {
 async function updateSyncIndicator(text) {
   const cfg = await getSyncConfig();
   $sync.hidden = !cfg.enabled;
-  if (text) $sync.textContent = text === 'Backed up' ? '☁ Backed up' : `☁ ${text}`;
+  const show = (name, label) => $sync.replaceChildren(icon(name, 15), document.createTextNode(` ${label}`));
+  if (text) show(text === 'Backed up' ? 'cloud' : 'cloudOff', text);
   else {
     const last = await getSetting('syncLastResult', null);
-    $sync.textContent = !cfg.key
-      ? '🔒 Backup locked'
-      : !navigator.onLine
-        ? '☁ Offline – saved on device'
-        : last
-        ? last.ok
-          ? `☁ ${timeAgo(new Date(last.at))}`
-          : '☁ Backup failed'
-        : '☁ Not synced yet';
+    if (!cfg.key) show('lock', 'Backup locked');
+    else if (!navigator.onLine) show('cloudOff', 'Offline – saved on device');
+    else if (!last) show('cloud', 'Not synced yet');
+    else if (last.ok) show('cloud', timeAgo(new Date(last.at)));
+    else show('cloudOff', 'Backup failed');
   }
 }
 
@@ -210,7 +208,7 @@ function renderOverview(root) {
           drawContent();
         },
       },
-      h('span', { class: 'ico', 'aria-hidden': 'true' }, t.icon),
+      h('span', { class: 'ico', 'aria-hidden': 'true' }, icon(t.icon, 28)),
       t.tabLabel ?? t.label,
     ),
   );
@@ -224,7 +222,7 @@ function renderOverview(root) {
         h(
           'div',
           { class: 'card empty' },
-          h('div', { class: 'ico', 'aria-hidden': 'true' }, '🩺'),
+          h('div', { class: 'ico', 'aria-hidden': 'true' }, icon('gauge', 40)),
           h('h2', {}, 'No measurements yet'),
           h('p', {}, 'Take a photo of your blood pressure monitor, glucose meter or scale. The numbers are read right here in your browser – you check them before saving.'),
           h('a', { class: 'btn primary', href: `#/add?type=${state.overviewType}&camera=1` }, '+ Add measurement'),
@@ -270,7 +268,7 @@ function bpCards(bp, days) {
             'div',
             { class: 'reading' },
             h('div', { class: 'big' }, `${last.values.sys}/${last.values.dia}`, h('small', {}, 'mmHg')),
-            Number.isFinite(last.values.pulse) ? h('div', { class: 'side' }, `♥ ${last.values.pulse} `, h('small', {}, '/min')) : null,
+            Number.isFinite(last.values.pulse) ? h('div', { class: 'side' }, icon('heart', 18), ` ${last.values.pulse} `, h('small', {}, '/min')) : null,
           ),
         ),
         h('div', { class: 'row', style: { marginTop: '10px' } }, levelPill(lvl), (last.tags ?? []).map((tg) => h('span', { class: 'muted small' }, `#${tg}`))),
@@ -339,7 +337,7 @@ function renderTypeContent(root, type) {
       h(
         'div',
         { class: 'card empty' },
-        h('div', { class: 'ico', 'aria-hidden': 'true' }, type.icon),
+        h('div', { class: 'ico', 'aria-hidden': 'true' }, icon(type.icon, 40)),
         h('h2', {}, `No ${type.label.toLowerCase()} measurements yet`),
         h('p', {}, 'Take a photo of your device or enter the values by hand.'),
         h('a', { class: 'btn primary', href: `#/add?type=${type.id}&camera=1` }, `+ Add ${type.label.toLowerCase()}`),
@@ -452,7 +450,7 @@ function bpChartConfig(list, domain, height = 220) {
       return (
         tipHeader(t) +
         rows.map((r) => tipRow(r.series.cls, r.series.shape, r.series.short, r.point.v)).join('') +
-        (Number.isFinite(m?.values.pulse) ? `<div class="tip-row muted">♥ ${m.values.pulse} /min</div>` : '') +
+        (Number.isFinite(m?.values.pulse) ? `<div class="tip-row muted">${iconSVG('heart', 13)} ${m.values.pulse} /min</div>` : '') +
         (m?.tags?.length ? `<div class="muted">${m.tags.map((x) => '#' + esc(x)).join(' ')}</div>` : '')
       );
     },
@@ -572,12 +570,12 @@ function entryRow(m) {
   if (m.type === 'weight') {
     vals = h('div', { class: 'vals' }, `${formatWeight(m.values.weight, state.settings.weightUnit)} `, h('small', {}, state.settings.weightUnit));
   } else if (m.type === 'bp') {
-    vals = h('div', { class: 'vals' }, `${m.values.sys}/${m.values.dia} `, h('small', {}, 'mmHg'), Number.isFinite(m.values.pulse) ? h('small', {}, `  ♥ ${m.values.pulse}`) : null);
+    vals = h('div', { class: 'vals' }, `${m.values.sys}/${m.values.dia} `, h('small', {}, 'mmHg'), Number.isFinite(m.values.pulse) ? h('small', {}, '  ', icon('heart', 12), ` ${m.values.pulse}`) : null);
   } else {
     vals = h('div', { class: 'vals' }, `${formatGlucose(m.values.glucose, unit)} `, h('small', {}, unit));
   }
   const ctx = m.type === 'glucose' ? GLUCOSE_CONTEXTS.find((c) => c.id === m.values.context)?.label : null;
-  const meta = [t.shortLabel, ctx, ...(m.tags ?? []).map((x) => `#${x}`), m.note ? '✎' : null, m.hasPhoto ? '📷' : null].filter(Boolean).join(' · ');
+  const meta = [t.shortLabel, ctx, ...(m.tags ?? []).map((x) => `#${x}`), m.note ? 'note' : null, m.hasPhoto ? 'photo' : null].filter(Boolean).join(' · ');
   return h(
     'button',
     { class: 'entry', onclick: () => (location.hash = `#/edit/${m.id}`) },
@@ -606,7 +604,7 @@ function renderHistory(root) {
         'div',
         { class: 'row', style: { justifyContent: 'space-between' } },
         h('span', { class: 'muted small' }, `${list.length} measurement${list.length === 1 ? '' : 's'}`),
-        h('button', { class: 'btn small', onclick: () => exportCSV(list) }, '⬇ Export CSV'),
+        h('button', { class: 'btn small', onclick: () => exportCSV(list) }, icon('download', 16), 'Export CSV'),
       ),
     );
     let day = null;
@@ -987,7 +985,7 @@ async function renderEditor(root, { arg, params }) {
         h(
           'div',
           { class: 'card stack' },
-          h('div', { class: 'grid-2' }, h('button', { class: 'btn big primary', onclick: () => fileCam.click() }, h('span', { class: 'ico', 'aria-hidden': 'true' }, '📷'), 'Take photo'), h('button', { class: 'btn big', onclick: () => fileGal.click() }, h('span', { class: 'ico', 'aria-hidden': 'true' }, '🖼'), 'Choose image')),
+          h('div', { class: 'grid-2' }, h('button', { class: 'btn big primary', onclick: () => fileCam.click() }, h('span', { class: 'ico', 'aria-hidden': 'true' }, icon('camera', 26)), 'Take photo'), h('button', { class: 'btn big', onclick: () => fileGal.click() }, h('span', { class: 'ico', 'aria-hidden': 'true' }, icon('image', 26)), 'Choose image')),
           h('p', { class: 'muted small', style: { margin: 0 } }, existing ? 'Take a new photo to re-read this measurement.' : 'Hold the phone straight in front of the display, avoid reflections. Or simply type the values below.'),
         ),
       );
@@ -1006,7 +1004,7 @@ async function renderEditor(root, { arg, params }) {
     paintCanvas();
     attachCropper(canvasEl);
     const status = s.status
-      ? h('div', { class: 'photo-status' }, s.status.busy ? h('span', { class: 'spinner', 'aria-hidden': 'true' }) : h('span', { 'aria-hidden': 'true' }, s.status.ok ? '✓' : 'ⓘ'), h('span', {}, s.status.text))
+      ? h('div', { class: 'photo-status' }, s.status.busy ? h('span', { class: 'spinner', 'aria-hidden': 'true' }) : h('span', { 'aria-hidden': 'true', class: 'status-ico' }, icon(s.status.ok ? 'check' : 'info', 18)), h('span', {}, s.status.text))
       : null;
     photoArea.append(
       h(
@@ -1017,7 +1015,7 @@ async function renderEditor(root, { arg, params }) {
         h(
           'div',
           { class: 'row', style: { marginTop: '8px' } },
-          h('button', { class: 'btn small', onclick: () => fileCam.click() }, '📷 Retake'),
+          h('button', { class: 'btn small', onclick: () => fileCam.click() }, icon('retake', 16), 'Retake'),
           s.crop
             ? h(
                 'button',
@@ -1031,7 +1029,7 @@ async function renderEditor(root, { arg, params }) {
                 'Reset area',
               )
             : h('span', { class: 'muted small' }, 'Tip: drag over the photo to mark the numbers'),
-          state.settings.claudeKey ? h('button', { class: 'btn small', onclick: runClaude }, '✨ Read with Claude') : null,
+          state.settings.claudeKey ? h('button', { class: 'btn small', onclick: runClaude }, icon('sparkle', 16), 'Read with Claude') : null,
         ),
       ),
     );
@@ -1051,14 +1049,28 @@ async function renderEditor(root, { arg, params }) {
       ctx.fillRect(0, y, x, hh);
       ctx.fillRect(x + w, y, c.width - x - w, hh);
     }
-    if (s.overlay?.rows?.length && !s.overlay.rotation) {
+    if (s.overlay?.rows?.length) {
       const labels = MEASUREMENT_TYPES[s.type].fields.map((f) => f.short);
       const fontPx = Math.round(Math.max(14, c.width / 28));
       ctx.font = `700 ${fontPx}px system-ui, sans-serif`;
       s.overlay.rows.forEach((r, i) => {
         const pad = lw * 3;
         ctx.strokeStyle = '#3987e5';
-        ctx.strokeRect(r.box.x0 - pad, r.box.y0 - pad, r.box.x1 - r.box.x0 + 2 * pad, r.box.y1 - r.box.y0 + 2 * pad);
+        if (r.poly) {
+          // the row's outline in the photo (tilted if the photo was read straightened)
+          const cxp = r.poly.reduce((a, p) => a + p[0], 0) / 4;
+          const cyp = r.poly.reduce((a, p) => a + p[1], 0) / 4;
+          ctx.beginPath();
+          r.poly.forEach(([x, y], j) => {
+            const px = x + Math.sign(x - cxp) * pad;
+            const py = y + Math.sign(y - cyp) * pad;
+            j ? ctx.lineTo(px, py) : ctx.moveTo(px, py);
+          });
+          ctx.closePath();
+          ctx.stroke();
+        } else {
+          ctx.strokeRect(r.box.x0 - pad, r.box.y0 - pad, r.box.x1 - r.box.x0 + 2 * pad, r.box.y1 - r.box.y0 + 2 * pad);
+        }
         // show the number as on the display, with its decimal point
         const shown = r.decimals > 0 && Number.isFinite(r.number) ? r.number.toFixed(r.decimals) : r.text;
         const tag = `${labels[i] ?? ''} ${shown}`.trim();
@@ -1142,7 +1154,7 @@ async function renderEditor(root, { arg, params }) {
           h('label', { for: `in-${f.key}` }, f.short),
           input,
           h('div', { class: 'unit' }, f.unit(st)),
-          s.fromPhoto.has(f.key) ? h('div', { class: 'from-photo-tag', title: 'Read from the photo' }, '◉ photo') : null,
+          s.fromPhoto.has(f.key) ? h('div', { class: 'from-photo-tag', title: 'Read from the photo' }, 'from photo') : null,
         ),
       );
     }
@@ -1457,7 +1469,7 @@ async function renderSettings(root) {
   let hasKey = !!cfg.key;
   const showKeyState = () => {
     keyState.textContent = hasKey
-      ? '🔒 Unlocked on this device. Records are encrypted (AES-256-GCM) before upload.'
+      ? 'Unlocked on this device. Records are encrypted (AES-256-GCM) before upload.'
       : 'Choose a passphrase on your first device and enter the same one on every other device. It is never stored or uploaded – if you lose it, the backup cannot be read.';
     keyBtn.textContent = hasKey ? 'Forget key on this device' : 'Set / unlock passphrase';
     passIn.closest('label')?.toggleAttribute('hidden', hasKey);
@@ -1589,7 +1601,7 @@ async function renderSettings(root) {
       'div',
       { class: 'card stack' },
       h('div', { class: 'setting', style: { padding: 0, border: 0 } }, h('div', {}, 'CSV separator', h('div', { class: 'desc' }, 'Use semicolon for Excel with German/European locale.')), select('csvDelimiter', [[',', 'Comma ( , )'], [';', 'Semicolon ( ; )']], 'CSV separator')),
-      h('button', { class: 'btn block', onclick: () => exportCSV(state.measurements) }, '⬇ Export all as CSV'),
+      h('button', { class: 'btn block', onclick: () => exportCSV(state.measurements) }, icon('download', 16), 'Export all as CSV'),
       h(
         'button',
         {
@@ -1600,9 +1612,10 @@ async function renderSettings(root) {
             download(`vitals-backup-${localDate(new Date())}.json`, JSON.stringify(payload, null, 2), 'application/json');
           },
         },
-        '⬇ Export JSON backup',
+        icon('download', 16),
+        'Export JSON backup',
       ),
-      h('button', { class: 'btn block', onclick: () => importIn.click() }, '⬆ Import JSON backup'),
+      h('button', { class: 'btn block', onclick: () => importIn.click() }, icon('upload', 16), 'Import JSON backup'),
       importIn,
       h(
         'button',

@@ -223,6 +223,27 @@ export function readDisplay(img, kind = 'bp', opts = {}) {
     result.orientation = k * 90;
     result.rotation = 0;
   }
+  // Every row gets `poly`: its four corners in the photo's own coordinates. A
+  // reading found on a slightly rotated copy (rotateImage, about the centre)
+  // is mapped back, so the overlay can mark the display in the photo.
+  const rad = ((result.rotation || 0) * Math.PI) / 180;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  const cx = img.width / 2;
+  const cy = img.height / 2;
+  const toPhoto = ([x, y]) => [cos * (x - cx) + sin * (y - cy) + cx, -sin * (x - cx) + cos * (y - cy) + cy];
+  const polyOf = (b) => [[b.x0, b.y0], [b.x1, b.y0], [b.x1, b.y1], [b.x0, b.y1]].map(toPhoto);
+  const bboxOf = (poly) => ({
+    x0: Math.min(...poly.map((p) => p[0])),
+    x1: Math.max(...poly.map((p) => p[0])),
+    y0: Math.min(...poly.map((p) => p[1])),
+    y1: Math.max(...poly.map((p) => p[1])),
+  });
+  result.rows = result.rows.map((r) => {
+    const poly = polyOf(r.box);
+    return { ...r, poly, box: bboxOf(poly) };
+  });
+  if (result.box) result.box = bboxOf(polyOf(result.box));
   if (opts.debug) result.passes = passes.map((p) => ({ score: p.score, values: p.values, rows: p.rows.map((r) => r.text), opts: { ...p.readOpts, crop: p.readOpts.crop && 'crop' }, rotation: p.rotation, box: p.box, crop: p.readOpts.crop }));
   delete result.transform;
   return result;

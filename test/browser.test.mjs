@@ -70,9 +70,18 @@ try {
           cv = r;
         }
         const img = cv.getContext('2d').getImageData(0, 0, cv.width, cv.height);
-        return readDisplay(img, 'bp').values;
+        const r = readDisplay(img, 'bp');
+        const sys = r.rows[0];
+        const centre = sys?.poly ? [sys.poly.reduce((a, p) => a + p[0], 0) / 4, sys.poly.reduce((a, p) => a + p[1], 0) / 4] : null;
+        return { values: r.values, centre };
       }, { c, seed: i + 7 });
-      assert.deepEqual(got, { sys: c.sys, dia: c.dia, pulse: c.pulse });
+      assert.deepEqual(got.values, { sys: c.sys, dia: c.dia, pulse: c.pulse });
+      // the overlay box of SYS is drawn on the SYS digits of the original image
+      // (synthetic SYS digits: x 380-660, y 240-470; sideways = rotated 90° clockwise)
+      const want = c.sideways ? [1300 - 355, 520] : [520, 355];
+      assert.ok(got.centre, 'SYS row has an outline');
+      const off = Math.hypot(got.centre[0] - want[0], got.centre[1] - want[1]);
+      assert.ok(off < 90, `SYS outline ${off.toFixed(0)} px away from the digits`);
     });
   }
 
@@ -145,6 +154,9 @@ try {
   await app.goto(base + '#/overview');
   await app.waitForSelector('.quick-actions');
   if (shots) await app.screenshot({ path: path.join(shots, '01-empty.png') });
+  await check('backup status is hidden while backup is off', async () => {
+    assert.equal(await app.locator('#sync-indicator').isVisible(), false);
+  });
 
   // photo to upload: real one if available, otherwise a synthetic display
   let photoPath = photos.includes('boso-medicus-x.webp') ? path.join(privateDir, 'boso-medicus-x.webp') : null;

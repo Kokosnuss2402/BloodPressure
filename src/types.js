@@ -63,7 +63,7 @@ export const MEASUREMENT_TYPES = {
     label: 'Blood pressure',
     shortLabel: 'BP',
     tabLabel: 'Pressure',
-    icon: '🩺',
+    icon: 'gauge',
     fields: [
       intField({ key: 'sys', label: 'Systolic', short: 'SYS', unitLabel: 'mmHg', min: 50, max: 280, required: true }),
       intField({ key: 'dia', label: 'Diastolic', short: 'DIA', unitLabel: 'mmHg', min: 25, max: 180, required: true }),
@@ -134,7 +134,7 @@ export const MEASUREMENT_TYPES = {
     label: 'Blood sugar',
     shortLabel: 'Glucose',
     tabLabel: 'Sugar',
-    icon: '🩸',
+    icon: 'drop',
     fields: [
       // stored canonically in mg/dL; displayed in the unit chosen in settings
       {
@@ -196,7 +196,7 @@ MEASUREMENT_TYPES.weight = {
   id: 'weight',
   label: 'Weight',
   shortLabel: 'Weight',
-  icon: '⚖️',
+  icon: 'scale',
   // scales are photographed from standing height: the display is small in the frame
   farDisplay: true,
   fields: [

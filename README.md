@@ -4,33 +4,33 @@ A mobile-friendly web app for keeping a log of your **blood pressure, pulse, blo
 Take a photo of your measuring device and the numbers are read **right in the browser**. Check
 the values, add tags, then save.
 
-- 📷 **Photo → values**: the on-device seven-segment reader works with typical LCD monitors (tested
+- **Photo to values**: the on-device seven-segment reader works with typical LCD monitors (tested
   with a boso medicus X). It handles slanted digits, shadows, tilted and far-away photos. Nothing
   is uploaded. If it can't read the display, drag a box around the numbers or type them in.
-- ✅ **Verify before saving**: values read from the photo are marked in blue and detected rows are
+- **Verify before saving**: values read from the photo are marked in blue and detected rows are
   outlined on the photo. Nothing is stored until you tap *Save*.
-- 🏷 **Tags**: define your own tags (Morning, Left arm, Medication taken, …), add new ones while
+- **Tags**: define your own tags (Morning, Left arm, Medication taken, …), add new ones while
   saving, and rename or delete them in Settings. History and charts can be filtered by tag.
-- 📈 **Charts & stats**: systolic/diastolic, pulse and glucose over time. Includes 7/30/90/365-day
+- **Charts & stats**: systolic/diastolic, pulse and glucose over time. Includes 7/30/90/365-day
   ranges, morning vs. evening averages, averages by tag, and a breakdown by category (ESH 2023 /
   ADA). The colours are colour-blind safe (deuteranopia), and every series also has its own marker
   shape and label.
-- 🩸 **Blood sugar** in mg/dL or mmol/L, with fasting / before / after meal context.
-- ⚖️ **Weight** in kg or lb, read from a bathroom-scale photo taken from standing height (small, far-away
+- **Blood sugar** in mg/dL or mmol/L, with fasting / before / after meal context.
+- **Weight** in kg or lb, read from a bathroom-scale photo taken from standing height (small, far-away
   display, LCD or LED, decimal point detected). With your height set, BMI and its WHO category are shown.
-- ⬇ **CSV export** (comma or semicolon for European Excel), JSON backup and import.
-- ☁ **Cloud backup** to your own **Cloudflare D1** database. The browser database (IndexedDB) stays
+- **CSV export** (comma or semicolon for European Excel), JSON backup and import.
+- **Cloud backup** to your own **Cloudflare D1** database. The browser database (IndexedDB) stays
   the main store. Two-way sync lets a second device restore your data, and deletions sync too.
   Photos never leave the device.
-- 🔒 **End-to-end encrypted backup**: every record is encrypted in the browser with AES-256-GCM, using
+- **End-to-end encrypted backup**: every record is encrypted in the browser with AES-256-GCM, using
   a key derived from your backup passphrase (PBKDF2-SHA-256, 600,000 iterations) and bound to the
   record id. D1 stores only the id, the time of the last change, a deleted flag and the ciphertext.
   The Worker refuses unencrypted records. The passphrase is never stored or uploaded: each device
   keeps only a non-exportable key. If you lose the passphrase, the backup can't be read.
-- ✨ Optional: let **Claude** read difficult displays with your own Anthropic API key (off by default).
-- 📱 Feels like an app: no pinch or double-tap zoom (there's an adjustable text size instead), no text
+- Optional: let **Claude** read difficult displays with your own Anthropic API key (off by default).
+- Feels like an app: no pinch or double-tap zoom (there's an adjustable text size instead), no text
   selection or long-press menus on controls. Photos are not kept unless you turn that on.
-- 📱 Installable PWA that **works fully offline**, including reading photos: measurements are saved on the
+- Installable PWA that **works fully offline**, including reading photos: measurements are saved on the
   device and synced to the backup automatically once you're back online. Light & dark mode.
 
 > Categories are for information only and are not a diagnosis.

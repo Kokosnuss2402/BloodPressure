@@ -921,6 +921,31 @@ main {
 .legend .s-pulse .marker, .chart-tip .s-pulse .marker { fill: var(--series-pulse); }
 .legend .s-glucose .marker, .chart-tip .s-glucose .marker { fill: var(--series-glucose); }
 .legend .s-weight .marker, .chart-tip .s-weight .marker { fill: var(--series-sys); }
+.ico-svg {
+  display: inline-block;
+  vertical-align: -0.18em;
+  flex-shrink: 0;
+}
+.btn .ico-svg {
+  vertical-align: middle;
+}
+.status-ico {
+  display: inline-flex;
+  color: var(--accent);
+}
+.sync-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.sync-indicator[hidden] {
+  display: none;
+}
+.empty .ico {
+  display: flex;
+  justify-content: center;
+  color: var(--text-2);
+}
 .inline-input {
   width: 84px;
   min-height: 40px;
