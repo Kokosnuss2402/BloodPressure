@@ -1,0 +1,21 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "vitals-log",
+  "main": "worker/index.js",
+  "compatibility_date": "2026-10-01",
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      // No database_id needed: `wrangler deploy` (also in Cloudflare Workers Builds)
+      // creates the D1 database on first deploy, and the worker creates its table.
+      "database_name": "vitals-log",
+      "migrations_dir": "migrations"
+    }
+  ]
+}

@@ -1,0 +1,30 @@
+{
+  "name": "vitals-log",
+  "version": "1.0.0",
+  "scripts": {
+    "test": "node --test test/unit/*.test.js",
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test:browser": "node test/browser.test.mjs",
+    "deploy": "vite build && wrangler deploy",
+    "worker:dev": "vite build && wrangler dev"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Kokosnuss2402/BloodPressure.git"
+  },
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/Kokosnuss2402/BloodPressure/issues"
+  },
+  "homepage": "https://github.com/Kokosnuss2402/BloodPressure#readme",
+  "devDependencies": {
+    "vite": "^6.4.5",
+    "wrangler": "^4.158.0"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.5.0"
+  },
+  "type": "module"
+}
