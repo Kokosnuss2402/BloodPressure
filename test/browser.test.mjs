@@ -352,6 +352,57 @@ try {
   });
 
   await check('no uncaught page errors', async () => assert.deepEqual(errors, []));
+
+  // ---------------- 4. live scan with a fake camera (a video of a synthetic monitor)
+  await check('e2e: live scan reads the display from the camera', async () => {
+    const frame = await page.evaluate(async () => {
+      const { syntheticDisplay } = await import('/test/synthetic-display.js');
+      const cv = syntheticDisplay({ sys: 132, dia: 84, pulse: 66, seed: 21 });
+      const d = cv.getContext('2d').getImageData(0, 0, cv.width, cv.height);
+      let bin = '';
+      for (let i = 0; i < d.data.length; i += 0x8000) bin += String.fromCharCode(...d.data.subarray(i, i + 0x8000));
+      return { w: cv.width, h: cv.height, b64: btoa(bin) };
+    });
+    // RGBA -> Y4M (I420), a few identical frames; Chromium loops the file as camera input
+    const rgba = Buffer.from(frame.b64, 'base64');
+    const { w, h } = frame;
+    const Y = Buffer.alloc(w * h);
+    const U = Buffer.alloc((w / 2) * (h / 2));
+    const V = Buffer.alloc((w / 2) * (h / 2));
+    for (let y = 0; y < h; y++)
+      for (let x = 0; x < w; x++) {
+        const i = (y * w + x) * 4;
+        const [r, g, b] = [rgba[i], rgba[i + 1], rgba[i + 2]];
+        Y[y * w + x] = Math.round(0.299 * r + 0.587 * g + 0.114 * b);
+        if (y % 2 === 0 && x % 2 === 0) {
+          const j = (y / 2) * (w / 2) + x / 2;
+          U[j] = Math.max(0, Math.min(255, Math.round(128 - 0.168736 * r - 0.331264 * g + 0.5 * b)));
+          V[j] = Math.max(0, Math.min(255, Math.round(128 + 0.5 * r - 0.418688 * g - 0.081312 * b)));
+        }
+      }
+    const parts = [Buffer.from(`YUV4MPEG2 W${w} H${h} F10:1 Ip A1:1 C420jpeg\n`)];
+    for (let f = 0; f < 10; f++) parts.push(Buffer.from('FRAME\n'), Y, U, V);
+    const y4m = path.join(root, 'node_modules/.cache-live.y4m');
+    fs.writeFileSync(y4m, Buffer.concat(parts));
+
+    const camBrowser = await chromium.launch({
+      args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream', `--use-file-for-fake-video-capture=${y4m}`],
+    });
+    try {
+      const cctx = await camBrowser.newContext({ viewport: { width: 390, height: 844 }, permissions: ['camera'] });
+      const cam = await cctx.newPage();
+      await cam.goto(base + '#/add?type=bp');
+      await cam.getByRole('button', { name: 'Live scan' }).click();
+      await cam.waitForFunction(() => document.querySelector('#in-sys')?.value !== '', null, { timeout: 30000 });
+      assert.deepEqual([await cam.inputValue('#in-sys'), await cam.inputValue('#in-dia'), await cam.inputValue('#in-pulse')], ['132', '84', '66']);
+      assert.match(await cam.locator('.photo-status').innerText(), /Read live/);
+      // the camera is switched off once the reading is taken
+      assert.equal(await cam.evaluate(() => document.querySelector('video') === null), true);
+      if (shots) await cam.screenshot({ path: path.join(shots, '10-live-done.png') });
+    } finally {
+      await camBrowser.close();
+    }
+  });
 } finally {
   await browser.close();
   await server.close();

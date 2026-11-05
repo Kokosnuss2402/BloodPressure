@@ -7,6 +7,15 @@ the values, add tags, then save.
 - **Photo to values**: the on-device seven-segment reader works with typical LCD monitors (tested
   with a boso medicus X). It handles slanted digits, shadows, tilted and far-away photos. Nothing
   is uploaded. If it can't read the display, drag a box around the numbers or type them in.
+- **Live scan**: besides taking or choosing a photo, the camera can read the display continuously and
+  stops as soon as two frames in a row give the same complete reading. It guides you while aiming
+  ("move closer", "hold still").
+- **How the reader works**: it first looks for the display (clusters of segment strokes with a
+  consistent stroke width, in any orientation) and reads only small crops around it, upright, tilted
+  and turned, for dark and for bright (LED) digits. Only if that fails does it search the whole photo.
+  It then re-reads the display at several thresholds and votes digit by digit; values with a digit
+  it is unsure about are marked "please check". A reading far from your recent ones (blood pressure,
+  weight) gets a hint before saving.
 - **Verify before saving**: values read from the photo are marked in blue and detected rows are
   outlined on the photo. Nothing is stored until you tap *Save*.
 - **Tags**: define your own tags (Morning, Left arm, Medication taken, …), add new ones while
@@ -79,8 +88,8 @@ data isn't committed). Name them `<sys>-<dia>-<pulse>.jpg`, e.g. `128-82-64.jpg`
 
 | Path | What |
 | --- | --- |
-| `src/ocr/sevenSegment.js` | LCD reader: adaptive threshold → segment components → de-slant → digits → rows |
-| `src/ocr/reader.js` | multi-pass reading (thresholds, rotation, zoom on display) + plausibility scoring |
+| `src/ocr/sevenSegment.js` | LCD reader: adaptive threshold, thin-line removal, segment components, de-slant, digits, rows, decimal point; display candidates |
+| `src/ocr/reader.js` | reading strategy: display candidates, fallback passes, zoom, per-digit vote, mapping boxes back to the photo |
 | `src/ocr/claudeVision.js` | optional Claude vision fallback (bring your own key) |
 | `src/types.js` | measurement types (blood pressure, blood sugar): fields, ranges, categories. Add new types here |
 | `src/db.js`, `src/sync.js`, `src/crypto.js` | IndexedDB storage, end-to-end encrypted two-way sync with the D1 backup |

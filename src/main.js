@@ -803,8 +803,9 @@ async function loadImage(file) {
 }
 
 function drawScaled(img, maxDim) {
-  const w0 = img.width ?? img.naturalWidth;
-  const h0 = img.height ?? img.naturalHeight;
+  // <video> reports its frame size in videoWidth/videoHeight (width is the CSS attribute)
+  const w0 = img.videoWidth || img.naturalWidth || img.width;
+  const h0 = img.videoHeight || img.naturalHeight || img.height;
   const s = Math.min(1, maxDim / Math.max(w0, h0));
   const c = document.createElement('canvas');
   c.width = Math.round(w0 * s);
@@ -979,17 +980,164 @@ async function renderEditor(root, { arg, params }) {
     if (Object.keys(values).length) s.source = s.source === 'photo-ai' ? 'photo-ai' : 'photo';
   }
 
+  // ---- live scan: read camera frames until two in a row agree
+  const liveSupported = !!navigator.mediaDevices?.getUserMedia;
+  const live = { on: false, stream: null, video: null, overlay: null, status: null, last: null, frames: 0 };
+
+  async function startLive() {
+    live.on = true;
+    live.last = null;
+    live.frames = 0;
+    drawPhoto();
+    try {
+      live.stream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+      });
+    } catch (err) {
+      live.on = false;
+      s.status = { warn: true, text: `Camera not available (${err.name === 'NotAllowedError' ? 'permission denied' : err.message}). Use "Take photo" instead.` };
+      drawPhoto();
+      return;
+    }
+    if (!live.on) return stopLive(); // stopped while waiting for permission
+    live.video.srcObject = live.stream;
+    await live.video.play().catch(() => {});
+    liveLoop();
+  }
+
+  function stopLive() {
+    live.on = false;
+    live.stream?.getTracks().forEach((t) => t.stop());
+    live.stream = null;
+  }
+
+  function liveStatus(text) {
+    if (live.status) live.status.textContent = text;
+  }
+
+  async function liveLoop() {
+    const type = MEASUREMENT_TYPES[s.type];
+    while (live.on) {
+      const v = live.video;
+      if (!v || v.readyState < 2 || !v.videoWidth) {
+        await new Promise((r) => setTimeout(r, 100));
+        continue;
+      }
+      const frame = drawScaled(v, type.farDisplay ? 2400 : 1600);
+      const image = frame.getContext('2d').getImageData(0, 0, frame.width, frame.height);
+      let result;
+      try {
+        ({ result } = await readInWorker(image, s.type, null));
+      } catch {
+        continue;
+      }
+      if (!live.on) break;
+      live.frames++;
+      drawLiveBoxes(result, frame.width, frame.height);
+      const complete = Object.keys(result.values).length === type.fields.length && !(result.uncertain ?? []).length;
+      const key = complete ? JSON.stringify(result.values) : null;
+      if (key && key === live.last) {
+        // stable: freeze this frame and fill in the values for checking
+        stopLive();
+        s.photoImg = frame;
+        s.photoCanvas = frame;
+        if (state.settings.keepPhotos) s.photoBlob = await canvasToBlob(drawScaled(frame, 1024));
+        s.crop = null;
+        s.overlay = result;
+        s.uncertain = new Set(result.uncertain ?? []);
+        s.readStartedAt = Date.now() - 1; // edits made while scanning are kept
+        s.ocrRaw = { ...result.values, engine: 'on-device-live', score: result.score };
+        applyRecognized(result.values);
+        s.status = { ok: true, text: `Read live from ${live.frames} camera frames – please check the values below.` };
+        drawPhoto();
+        drawForm();
+        return;
+      }
+      live.last = key;
+      if (key) liveStatus('Hold still…');
+      else if (!result.box) liveStatus('Point the camera at the display.');
+      else if ((result.box.x1 - result.box.x0) / frame.width < 0.12) liveStatus('Move closer to the display.');
+      else liveStatus('Reading the display…');
+    }
+  }
+
+  function drawLiveBoxes(result, w, h) {
+    const cv = live.overlay;
+    if (!cv) return;
+    cv.width = w;
+    cv.height = h;
+    const ctx = cv.getContext('2d');
+    ctx.clearRect(0, 0, w, h);
+    ctx.lineWidth = Math.max(3, w / 250);
+    ctx.strokeStyle = '#3987e5';
+    for (const r of result.rows ?? []) {
+      if (!r.poly) continue;
+      ctx.beginPath();
+      r.poly.forEach(([x, y], j) => (j ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+      ctx.closePath();
+      ctx.stroke();
+    }
+  }
+
   let canvasEl = null;
   function drawPhoto() {
     photoArea.replaceChildren();
+    if (live.on) {
+      live.video = h('video', { playsinline: true, muted: true, autoplay: true, class: 'live-video', 'aria-label': 'Camera preview' });
+      live.video.muted = true;
+      live.overlay = h('canvas', { class: 'live-overlay', 'aria-hidden': 'true' });
+      live.status = h('span', {}, 'Starting the camera…');
+      if (live.stream) {
+        live.video.srcObject = live.stream;
+        live.video.play().catch(() => {});
+      }
+      photoArea.append(
+        h(
+          'div',
+          { class: 'card', style: { padding: '8px' } },
+          h('div', { class: 'photo-wrap live-wrap' }, live.video, live.overlay),
+          h('div', { class: 'photo-status' }, h('span', { class: 'spinner', 'aria-hidden': 'true' }), live.status),
+          h(
+            'div',
+            { class: 'row', style: { marginTop: '8px' } },
+            h(
+              'button',
+              {
+                class: 'btn small',
+                onclick: () => {
+                  stopLive();
+                  drawPhoto();
+                },
+              },
+              'Stop',
+            ),
+            h('span', { class: 'muted small' }, 'Hold the display inside the picture; it is read automatically.'),
+          ),
+        ),
+      );
+      return;
+    }
     if (!s.photoCanvas) {
       const existing = editing?.hasPhoto;
       photoArea.append(
         h(
           'div',
           { class: 'card stack' },
-          h('div', { class: 'grid-2' }, h('button', { class: 'btn big primary', onclick: () => fileCam.click() }, h('span', { class: 'ico', 'aria-hidden': 'true' }, icon('camera', 26)), 'Take photo'), h('button', { class: 'btn big', onclick: () => fileGal.click() }, h('span', { class: 'ico', 'aria-hidden': 'true' }, icon('image', 26)), 'Choose image')),
-          h('p', { class: 'muted small', style: { margin: 0 } }, existing ? 'Take a new photo to re-read this measurement.' : 'Hold the phone straight in front of the display, avoid reflections. Or simply type the values below.'),
+          h(
+            'div',
+            { class: `photo-actions ${liveSupported ? 'three' : ''}` },
+            h('button', { class: 'btn big primary', onclick: () => fileCam.click() }, h('span', { class: 'ico', 'aria-hidden': 'true' }, icon('camera', 26)), 'Take photo'),
+            h('button', { class: 'btn big', onclick: () => fileGal.click() }, h('span', { class: 'ico', 'aria-hidden': 'true' }, icon('image', 26)), 'Choose image'),
+            liveSupported ? h('button', { class: 'btn big', onclick: startLive }, h('span', { class: 'ico', 'aria-hidden': 'true' }, icon('scan', 26)), 'Live scan') : null,
+          ),
+          h(
+            'p',
+            { class: 'muted small', style: { margin: 0 } },
+            existing
+              ? 'Take a new photo to re-read this measurement.'
+              : `Hold the phone straight in front of the display, avoid reflections.${liveSupported ? ' Live scan reads the display through the camera until the reading is stable.' : ''} Or simply type the values below.`,
+          ),
         ),
       );
       if (existing) {
@@ -1019,6 +1167,7 @@ async function renderEditor(root, { arg, params }) {
           'div',
           { class: 'row', style: { marginTop: '8px' } },
           h('button', { class: 'btn small', onclick: () => fileCam.click() }, icon('retake', 16), 'Retake'),
+          liveSupported ? h('button', { class: 'btn small', onclick: startLive }, icon('scan', 16), 'Scan again') : null,
           s.crop
             ? h(
                 'button',
@@ -1347,6 +1496,8 @@ async function renderEditor(root, { arg, params }) {
 
   drawPhoto();
   drawForm();
+  // leaving the editor switches the camera off
+  const cleanup = () => stopLive();
   if (params.get('camera') === '1' && !editing) {
     // Opening the camera needs a user gesture on most mobile browsers; the
     // quick-action link counts as one in Chrome/Safari when triggered immediately.
@@ -1356,6 +1507,7 @@ async function renderEditor(root, { arg, params }) {
       /* ignored – the user can tap "Take photo" */
     }
   }
+  return cleanup;
 }
 
 // ---------------------------------------------------------------- settings
