@@ -710,17 +710,18 @@ export function displayCandidates(prep, { threshold = 0.18, far = true, max = 4 
   return out.sort((a, b) => b.score - a.score).slice(0, max);
 }
 
-function cropImage(img, c) {
+/** Copy a rectangle out of an image (clamped to the image); x/y = its origin. */
+export function cropImage(img, c) {
   const x = Math.max(0, Math.round(c.x));
   const y = Math.max(0, Math.round(c.y));
-  const w = Math.min(img.width - x, Math.round(c.w));
-  const h = Math.min(img.height - y, Math.round(c.h));
+  const w = Math.max(1, Math.min(img.width - x, Math.round(c.w)));
+  const h = Math.max(1, Math.min(img.height - y, Math.round(c.h)));
   const data = new Uint8ClampedArray(w * h * 4);
   for (let yy = 0; yy < h; yy++) {
     const so = ((y + yy) * img.width + x) * 4;
     data.set(img.data.subarray(so, so + w * 4), yy * w * 4);
   }
-  return { width: w, height: h, data };
+  return { width: w, height: h, data, x, y };
 }
 
 /**

@@ -2,7 +2,7 @@
 // (different thresholds, small rotations, zoom-in on the detected display)
 // and keeps the most plausible reading for the requested measurement type.
 
-import { prepare, readPrepared, displayCandidates, pickDisplayStack } from './sevenSegment.js';
+import { prepare, readPrepared, displayCandidates, pickDisplayStack, cropImage } from './sevenSegment.js';
 import { MEASUREMENT_TYPES } from '../types.js';
 
 /** Rotate by k quarter turns clockwise (swaps width and height for odd k). */
@@ -89,17 +89,15 @@ function stackBox(stack) {
   };
 }
 
-function cropPixels(img, c) {
-  const x = Math.max(0, Math.round(c.x));
-  const y = Math.max(0, Math.round(c.y));
-  const w = Math.max(1, Math.min(img.width - x, Math.round(c.w)));
-  const h = Math.max(1, Math.min(img.height - y, Math.round(c.h)));
-  const data = new Uint8ClampedArray(w * h * 4);
-  for (let yy = 0; yy < h; yy++) {
-    const so = ((y + yy) * img.width + x) * 4;
-    data.set(img.data.subarray(so, so + w * 4), yy * w * 4);
-  }
-  return { width: w, height: h, data, x, y };
+/** Map a point of a w×h image rotated by `deg` (rotateImage, about the centre) back. */
+function unrotate(deg, w, h) {
+  const rad = (deg * Math.PI) / 180;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  const cx = w / 2;
+  const cy = h / 2;
+  // rotateImage samples the source at R(p - c) + c
+  return ([x, y]) => [cos * (x - cx) + sin * (y - cy) + cx, -sin * (x - cx) + cos * (y - cy) + cy];
 }
 
 /** Map a point of a quarter-turned image (k turns clockwise of a w×h image) back. */
@@ -145,24 +143,15 @@ export function readDisplay(img, kind = 'bp', opts = {}) {
     return () => (v ??= f());
   };
   const photoView = { key: 'photo', image: () => img, factor: 1, full: () => img, toPhoto: (p) => p, rotation: 0 };
-  let smallMemo = null;
-  const small = () => (smallMemo ??= downscale(img, 1000));
-  const rotView = (deg) => {
-    const rad = (deg * Math.PI) / 180;
-    const cos = Math.cos(rad);
-    const sin = Math.sin(rad);
-    const cx = img.width / 2;
-    const cy = img.height / 2;
-    return {
-      key: `rot${deg}`,
-      image: memo(() => rotateImage(small().image, deg)),
-      factor: small().factor,
-      full: memo(() => rotateImage(img, deg)),
-      // rotateImage samples the source at R(p - c) + c
-      toPhoto: ([x, y]) => [cos * (x - cx) + sin * (y - cy) + cx, -sin * (x - cx) + cos * (y - cy) + cy],
-      rotation: deg,
-    };
-  };
+  const small = memo(() => downscale(img, 1000));
+  const rotView = (deg) => ({
+    key: `rot${deg}`,
+    image: memo(() => rotateImage(small().image, deg)),
+    factor: small().factor,
+    full: memo(() => rotateImage(img, deg)),
+    toPhoto: unrotate(deg, img.width, img.height),
+    rotation: deg,
+  });
   const quarterView = (k, fullRes) => {
     const src = fullRes ? { image: img, factor: 1 } : small();
     return {
@@ -174,36 +163,29 @@ export function readDisplay(img, kind = 'bp', opts = {}) {
       rotation: k * 90,
     };
   };
-  // a crop of the photo around a display candidate, turned by k quarters or
-  // rotated by a few degrees (tilted photo)
-  const cropView = (i, c, k, deg = 0) => {
-    const pix = memo(() => cropPixels(img, c));
-    const turned = memo(() => (deg ? rotateImage(pix(), deg) : rotateQuarter(pix(), k)));
-    const rad = (deg * Math.PI) / 180;
+  // a crop of the photo around a display candidate (pix: the crop, copied once
+  // per candidate), turned by k quarters or rotated by a few degrees
+  const cropView = (i, pix, k, deg = 0) => {
+    const turned = memo(() => (deg ? rotateImage(pix, deg) : rotateQuarter(pix, k)));
+    const inCrop = deg ? unrotate(deg, pix.width, pix.height) : unturn(k, pix.width, pix.height);
     const back = (p) => {
-      let q;
-      if (deg) {
-        const cx = pix().width / 2;
-        const cy = pix().height / 2;
-        q = [Math.cos(rad) * (p[0] - cx) + Math.sin(rad) * (p[1] - cy) + cx, -Math.sin(rad) * (p[0] - cx) + Math.cos(rad) * (p[1] - cy) + cy];
-      } else q = unturn(k, pix().width, pix().height)(p);
-      return [q[0] + pix().x, q[1] + pix().y];
+      const q = inCrop(p);
+      return [q[0] + pix.x, q[1] + pix.y];
     };
     return { key: `c${i}q${k}r${deg}`, image: turned, factor: 1, full: turned, toPhoto: back, rotation: deg || k * 90, isCrop: true };
   };
 
   // ---- one reading pass (prepared images are shared between thresholds)
-  const prepCache = new Map();
+  // Only the most recent prepared image is kept: passes on the same view run back
+  // to back, and keeping all of them costs hundreds of MB on large photos.
+  let prepCache = { key: null, prep: null };
   const attempt = (view, readOpts) => {
     const image = view.image();
     // a crop view is read as a crop (glyphs may fill it; small crops are enlarged)
     const crop = readOpts.crop ?? (view.isCrop ? { x: 0, y: 0, w: image.width, h: image.height } : null);
     const pkey = `${view.key}|${readOpts.maxDim ?? 900}|${readOpts.invert ? 1 : 0}|${crop ? [crop.x, crop.y, crop.w, crop.h].map(Math.round).join(',') : ''}`;
-    let prep = prepCache.get(pkey);
-    if (!prep) {
-      prep = prepare(image, { maxDim: readOpts.maxDim ?? 900, invert: readOpts.invert, crop });
-      prepCache.set(pkey, prep);
-    }
+    if (prepCache.key !== pkey) prepCache = { key: pkey, prep: prepare(image, { maxDim: readOpts.maxDim ?? 900, invert: readOpts.invert, crop }) };
+    const prep = prepCache.prep;
     const { rows } = readPrepared(prep, { threshold: readOpts.threshold ?? 0.18, far: readOpts.far });
     // multi-value displays (blood pressure): the stacked rows; single-value: every candidate row
     const picked = multi ? pickDisplayStack(rows) : rows.filter((r) => r.value !== null);
@@ -244,9 +226,9 @@ export function readDisplay(img, kind = 'bp', opts = {}) {
         const bw = cb.x1 - cb.x0;
         const bh = cb.y1 - cb.y0;
         const m = Math.max(0.3 * Math.max(bw, bh), 6 * cb.t);
-        const c = { x: cb.x0 - m, y: cb.y0 - m, w: bw + 2 * m, h: bh + 2 * m };
+        const pix = cropImage(img, { x: cb.x0 - m, y: cb.y0 - m, w: bw + 2 * m, h: bh + 2 * m });
         for (const [k, deg] of orientations) {
-          const view = cropView(i, c, k, deg);
+          const view = cropView(i, pix, k, deg);
           // a second threshold only where the first one found digits at all
           const first = attempt(view, { threshold: 0.18, maxDim: 900, invert });
           if (first.score < 1 && first.rows.length) {
@@ -269,10 +251,11 @@ export function readDisplay(img, kind = 'bp', opts = {}) {
     }
   }
   // display far away (small in the frame): read at higher resolution
-  if (!good() || (type.farDisplay && !passes.some((p) => p.view.isCrop && p.score >= 1))) {
+  // (for scales always, unless a display candidate already gave a sure reading:
+  // the quick low-resolution pass can misread a small display plausibly)
+  if (!good() || (type.farDisplay && !accepted && !passes.some((p) => p.view.isCrop && p.score >= 1))) {
     for (const threshold of [0.18, 0.12]) {
-      if (good()) break;
-      attempt(photoView, { ...base, threshold, maxDim: 2400, far: true });
+      if (attempt(photoView, { ...base, threshold, maxDim: 2400, far: true }).score >= 1) break;
     }
   }
   // LED / backlit displays: bright digits on a dark background
@@ -314,7 +297,10 @@ export function readDisplay(img, kind = 'bp', opts = {}) {
     }
   }
 
-  passes.sort((a, b) => b.score - a.score);
+  // best first; on equal plausibility prefer readings that saw the digits larger
+  // (display crops, then higher working resolution)
+  const detail = (p) => (p.view.isCrop || p.readOpts.crop ? 2 : 0) + (p.readOpts.maxDim ?? 900) / 2400;
+  passes.sort((a, b) => b.score - a.score || detail(b) - detail(a));
   let best = passes[0];
 
   // 4. zoom: re-read just the display region at higher resolution
@@ -360,11 +346,19 @@ export function readDisplay(img, kind = 'bp', opts = {}) {
       others.push(attempt(best.view, { ...best.readOpts, threshold }));
     }
     const voted = voteRows(best.rows, others);
+    // which field came from which row, before the rows are replaced
+    const rowIndex = new Map(best.rows.map((r, i) => [r, i]));
+    const fieldIndex = Object.entries(best.fieldRows ?? {}).map(([k, r]) => [k, rowIndex.get(r)]);
     const re = type.fromDisplayRows(voted.rows, opts.settings);
     // use the voted reading unless it became less plausible
-    if (re.score >= best.score - 1e-9) best = { ...best, ...re, rows: multi ? voted.rows : re.row ? [re.row] : voted.rows };
-    const fieldRows = best.fieldRows ?? {};
-    uncertain = Object.keys(fieldRows).filter((k) => fieldRows[k]?.uncertain?.length);
+    if (re.score >= best.score - 1e-9) {
+      best = { ...best, ...re, rows: multi ? voted.rows : re.row ? [re.row] : voted.rows };
+      const fr = best.fieldRows ?? {};
+      uncertain = Object.keys(fr).filter((k) => fr[k]?.uncertain?.length);
+    } else {
+      // kept the original reading: its fields are uncertain where the vote disagreed
+      uncertain = fieldIndex.filter(([, i]) => i !== undefined && voted.rows[i]?.uncertain?.length).map(([k]) => k);
+    }
   }
 
   // map rows and box back to the photo: `poly` = four corners in the photo

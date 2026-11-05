@@ -768,20 +768,41 @@ function tagCompareCard(list, type) {
 
 let worker = null;
 let workerSeq = 0;
+const pending = new Map(); // id -> { resolve, reject, timer }
 function warmReader() {
-  worker ??= new Worker(new URL('./ocr/worker.js', import.meta.url), { type: 'module' });
+  if (worker) return;
+  worker = new Worker(new URL('./ocr/worker.js', import.meta.url), { type: 'module' });
+  worker.onmessage = (e) => {
+    const p = pending.get(e.data.id);
+    if (!p) return;
+    pending.delete(e.data.id);
+    clearTimeout(p.timer);
+    e.data.ok ? p.resolve(e.data) : p.reject(new Error(e.data.error));
+  };
+  // a crashed worker answers nothing: fail what is waiting and start a new one next time
+  worker.onerror = (e) => {
+    e.preventDefault?.();
+    failAll(new Error('The photo reader stopped unexpectedly.'));
+  };
 }
+function failAll(err) {
+  for (const p of pending.values()) {
+    clearTimeout(p.timer);
+    p.reject(err);
+  }
+  pending.clear();
+  worker?.terminate();
+  worker = null;
+}
+/** Read a display in the background worker. The pixels are handed over, not copied. */
 function readInWorker(image, kind, crop) {
   warmReader();
   const id = ++workerSeq;
   return new Promise((resolve, reject) => {
-    const onMsg = (e) => {
-      if (e.data.id !== id) return;
-      worker.removeEventListener('message', onMsg);
-      e.data.ok ? resolve(e.data) : reject(new Error(e.data.error));
-    };
-    worker.addEventListener('message', onMsg);
-    worker.postMessage({ id, image, kind, crop, settings: { glucoseUnit: state.settings.glucoseUnit, weightUnit: state.settings.weightUnit } });
+    const timer = setTimeout(() => failAll(new Error('Reading the photo took too long.')), 60000);
+    pending.set(id, { resolve, reject, timer });
+    const msg = { id, image, kind, crop, settings: { glucoseUnit: state.settings.glucoseUnit, weightUnit: state.settings.weightUnit } };
+    worker.postMessage(msg, [image.data.buffer]);
   });
 }
 
@@ -877,6 +898,8 @@ async function renderEditor(root, { arg, params }) {
                   s.type = t;
                   s.values = { ...(MEASUREMENT_TYPES[t].defaults?.() ?? {}) };
                   s.fromPhoto.clear();
+                  s.uncertain = new Set();
+                  live.last = null; // a live scan in progress starts over for the new type
                   e.currentTarget.parentElement.querySelectorAll('button').forEach((b, i) => b.setAttribute('aria-pressed', String(TYPE_LIST[i].id === t)));
                   if (s.photoImg) {
                     s.photoCanvas = drawScaled(s.photoImg, MEASUREMENT_TYPES[t].farDisplay ? 2400 : 1600);
@@ -943,6 +966,7 @@ async function renderEditor(root, { arg, params }) {
     if (!s.photoCanvas || !state.settings.claudeKey) return;
     s.status = { busy: true, text: 'Asking Claude to read the display…' };
     s.readStartedAt = Date.now();
+    s.uncertain = new Set(); // Claude's reading has no per-digit uncertainty
     drawPhoto();
     try {
       const { readWithClaude } = await import('./ocr/claudeVision.js');
@@ -982,12 +1006,20 @@ async function renderEditor(root, { arg, params }) {
 
   // ---- live scan: read camera frames until two in a row agree
   const liveSupported = !!navigator.mediaDevices?.getUserMedia;
-  const live = { on: false, stream: null, video: null, overlay: null, status: null, last: null, frames: 0 };
+  // gen: each start/stop gets a new number, so a loop of an earlier scan that is
+  // still waiting for the worker ends instead of running alongside the new one
+  const live = { on: false, gen: 0, stream: null, video: null, overlay: null, status: null, last: null, same: 0, frames: 0, errors: 0 };
 
   async function startLive() {
+    stopLive();
     live.on = true;
+    const gen = ++live.gen;
     live.last = null;
+    live.same = 0;
     live.frames = 0;
+    live.errors = 0;
+    // values typed while scanning are kept (applyRecognized skips later edits)
+    s.readStartedAt = Date.now();
     drawPhoto();
     try {
       live.stream = await navigator.mediaDevices.getUserMedia({
@@ -1000,14 +1032,19 @@ async function renderEditor(root, { arg, params }) {
       drawPhoto();
       return;
     }
-    if (!live.on) return stopLive(); // stopped while waiting for permission
+    if (!live.on || gen !== live.gen) {
+      // stopped (or restarted) while waiting for camera permission
+      live.stream?.getTracks().forEach((t) => t.stop());
+      return;
+    }
     live.video.srcObject = live.stream;
     await live.video.play().catch(() => {});
-    liveLoop();
+    liveLoop(gen);
   }
 
   function stopLive() {
     live.on = false;
+    live.gen++;
     live.stream?.getTracks().forEach((t) => t.stop());
     live.stream = null;
   }
@@ -1016,28 +1053,46 @@ async function renderEditor(root, { arg, params }) {
     if (live.status) live.status.textContent = text;
   }
 
-  async function liveLoop() {
-    const type = MEASUREMENT_TYPES[s.type];
-    while (live.on) {
+  async function liveLoop(gen) {
+    const alive = () => live.on && gen === live.gen;
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    while (alive()) {
       const v = live.video;
       if (!v || v.readyState < 2 || !v.videoWidth) {
-        await new Promise((r) => setTimeout(r, 100));
+        await wait(100);
         continue;
       }
+      // the type can be switched while scanning: read each frame for the current one
+      const kind = s.type;
+      const type = MEASUREMENT_TYPES[kind];
       const frame = drawScaled(v, type.farDisplay ? 2400 : 1600);
       const image = frame.getContext('2d').getImageData(0, 0, frame.width, frame.height);
       let result;
       try {
-        ({ result } = await readInWorker(image, s.type, null));
-      } catch {
+        ({ result } = await readInWorker(image, kind, null));
+        live.errors = 0;
+      } catch (err) {
+        if (!alive()) break;
+        // back off; give up (camera off) after repeated failures
+        if (++live.errors >= 5) {
+          stopLive();
+          s.status = { warn: true, text: `Live scan stopped: ${err.message} Use "Take photo" instead.` };
+          drawPhoto();
+          return;
+        }
+        await wait(500);
         continue;
       }
-      if (!live.on) break;
+      if (!alive() || kind !== s.type) continue;
       live.frames++;
       drawLiveBoxes(result, frame.width, frame.height);
-      const complete = Object.keys(result.values).length === type.fields.length && !(result.uncertain ?? []).length;
+      // Accept two consecutive identical complete readings without uncertain
+      // digits, or three in a row with some (those stay marked "please check").
+      const complete = Object.keys(result.values).length === type.fields.length;
       const key = complete ? JSON.stringify(result.values) : null;
-      if (key && key === live.last) {
+      live.same = key && key === live.last ? live.same + 1 : 1;
+      const sure = !(result.uncertain ?? []).length;
+      if (key && (sure ? live.same >= 2 : live.same >= 3)) {
         // stable: freeze this frame and fill in the values for checking
         stopLive();
         s.photoImg = frame;
@@ -1046,16 +1101,18 @@ async function renderEditor(root, { arg, params }) {
         s.crop = null;
         s.overlay = result;
         s.uncertain = new Set(result.uncertain ?? []);
-        s.readStartedAt = Date.now() - 1; // edits made while scanning are kept
         s.ocrRaw = { ...result.values, engine: 'on-device-live', score: result.score };
         applyRecognized(result.values);
-        s.status = { ok: true, text: `Read live from ${live.frames} camera frames – please check the values below.` };
+        s.status = sure
+          ? { ok: true, text: `Read live from ${live.frames} camera frames – please check the values below.` }
+          : { warn: true, text: `Read live from ${live.frames} camera frames – some digits were hard to read: check the values marked "please check".` };
         drawPhoto();
         drawForm();
         return;
       }
       live.last = key;
-      if (key) liveStatus('Hold still…');
+      if (key && !sure) liveStatus('Hold still – some digits are hard to read…');
+      else if (key) liveStatus('Hold still…');
       else if (!result.box) liveStatus('Point the camera at the display.');
       else if ((result.box.x1 - result.box.x0) / frame.width < 0.12) liveStatus('Move closer to the display.');
       else liveStatus('Reading the display…');
@@ -1496,8 +1553,19 @@ async function renderEditor(root, { arg, params }) {
 
   drawPhoto();
   drawForm();
-  // leaving the editor switches the camera off
-  const cleanup = () => stopLive();
+  // leaving the editor, or the app going to the background, switches the camera off
+  const onHidden = () => {
+    if (document.visibilityState === 'hidden' && live.on) {
+      stopLive();
+      s.status = { warn: true, text: 'Live scan stopped while the app was in the background.' };
+      drawPhoto();
+    }
+  };
+  document.addEventListener('visibilitychange', onHidden);
+  const cleanup = () => {
+    stopLive();
+    document.removeEventListener('visibilitychange', onHidden);
+  };
   if (params.get('camera') === '1' && !editing) {
     // Opening the camera needs a user gesture on most mobile browsers; the
     // quick-action link counts as one in Chrome/Safari when triggered immediately.
