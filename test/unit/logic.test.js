@@ -49,6 +49,18 @@ test('glucose units and classification', () => {
   assert.equal(glu.classify({ glucose: 60, context: 'after_meal' }).id, 'low');
 });
 
+test('weight: BMI categories incl. WHO underweight grades', () => {
+  const w = MEASUREMENT_TYPES.weight;
+  const at = (kg) => w.classify({ weight: kg }, { heightCm: 180 }).id;
+  assert.equal(at(50), 'underweight3'); // BMI 15.4
+  assert.equal(at(54), 'underweight2'); // 16.7
+  assert.equal(at(57), 'underweight1'); // 17.6
+  assert.equal(at(72), 'normal'); // 22.2
+  assert.equal(at(85), 'overweight'); // 26.2
+  assert.equal(at(100), 'obese1'); // 30.9
+  assert.equal(w.classify({ weight: 72 }, {}), null); // no height, no category
+});
+
 test('CSV export escapes values and includes pulse and tags', () => {
   const csv = toCSV(
     [

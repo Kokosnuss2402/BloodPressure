@@ -212,7 +212,10 @@ MEASUREMENT_TYPES.weight = {
     if (!Number.isFinite(bmi)) return null;
     // label: for one reading (with its BMI); group: for a category across readings
     const lvl = (id, group, rank) => ({ id, group, label: `${group} · BMI ${bmi.toFixed(1)}`, rank });
-    if (bmi < 18.5) return lvl('underweight', 'Underweight', 2);
+    // WHO grades of thinness
+    if (bmi < 16) return lvl('underweight3', 'Severely underweight', 5);
+    if (bmi < 17) return lvl('underweight2', 'Moderately underweight', 4);
+    if (bmi < 18.5) return lvl('underweight1', 'Mildly underweight', 2);
     if (bmi < 25) return lvl('normal', 'Normal', 0);
     if (bmi < 30) return lvl('overweight', 'Overweight', 2);
     if (bmi < 35) return lvl('obese1', 'Obesity I', 3);
