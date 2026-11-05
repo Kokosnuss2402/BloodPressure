@@ -72,7 +72,8 @@ function toGray(img, maxDim, maxUp = 1) {
   const scale = Math.min(maxUp, maxDim / Math.max(img.width, img.height));
   const w = Math.max(1, Math.round(img.width * scale));
   const h = Math.max(1, Math.round(img.height * scale));
-  const gray = new Float32Array(w * h);
+  // one byte per pixel (Uint8Clamped rounds and clamps)
+  const gray = new Uint8ClampedArray(w * h);
   const src = img.data;
   const sx = img.width / w;
   const sy = img.height / h;
@@ -123,28 +124,42 @@ function toGray(img, maxDim, maxUp = 1) {
   return { gray, w, h, scale };
 }
 
-/** Mean brightness of the (2r+1)² window around every pixel (computed once per image). */
+/**
+ * Mean brightness of the (2r+1)² window around every pixel (computed once per
+ * image), as 8.8 fixed point in a Uint16Array (half the size of Float32; 1/256
+ * brightness steps). Separable running sums in a shared Float32 work buffer:
+ * with one-byte greyscale all sums are integers below 2^24, so Float32 holds
+ * them exactly.
+ */
 function localMean(gray, w, h, win) {
-  // integral image (Float64 to avoid precision loss)
-  const integ = new Float64Array((w + 1) * (h + 1));
+  const r = Math.max(2, win >> 1);
+  const sums = scratch('meanSums', Float32Array, w * h, false);
+  // horizontal window sums
   for (let y = 0; y < h; y++) {
-    let row = 0;
+    const o = y * w;
+    let sum = 0;
+    for (let x = 0; x <= Math.min(w - 1, r); x++) sum += gray[o + x];
     for (let x = 0; x < w; x++) {
-      row += gray[y * w + x];
-      integ[(y + 1) * (w + 1) + x + 1] = integ[y * (w + 1) + x + 1] + row;
+      sums[o + x] = sum;
+      const add = x + r + 1;
+      const sub = x - r;
+      if (add < w) sum += gray[o + add];
+      if (sub >= 0) sum -= gray[o + sub];
     }
   }
-  const mean = new Float32Array(w * h);
-  const r = Math.max(2, win >> 1);
-  for (let y = 0; y < h; y++) {
-    const ya = Math.max(0, y - r);
-    const yb = Math.min(h, y + r + 1);
-    for (let x = 0; x < w; x++) {
-      const xa = Math.max(0, x - r);
-      const xb = Math.min(w, x + r + 1);
-      const count = (yb - ya) * (xb - xa);
-      mean[y * w + x] =
-        (integ[yb * (w + 1) + xb] - integ[ya * (w + 1) + xb] - integ[yb * (w + 1) + xa] + integ[ya * (w + 1) + xa]) / count;
+  // vertical window sums of those, divided by the window size
+  const mean = new Uint16Array(w * h);
+  for (let x = 0; x < w; x++) {
+    const cw = Math.min(w, x + r + 1) - Math.max(0, x - r);
+    let sum = 0;
+    for (let y = 0; y <= Math.min(h - 1, r); y++) sum += sums[y * w + x];
+    for (let y = 0; y < h; y++) {
+      const ch = Math.min(h, y + r + 1) - Math.max(0, y - r);
+      mean[y * w + x] = Math.round((sum / (cw * ch)) * 256);
+      const add = y + r + 1;
+      const sub = y - r;
+      if (add < h) sum += sums[add * w + x];
+      if (sub >= 0) sum -= sums[sub * w + x];
     }
   }
   return mean;
@@ -152,9 +167,11 @@ function localMean(gray, w, h, win) {
 
 /** Adaptive (Bradley) threshold: darker than the local mean by more than t. */
 function adaptiveThreshold(gray, mean, t) {
-  const mask = new Uint8Array(gray.length);
+  // reused buffer: the mask lives only for one pass
+  const mask = scratch('mask', Uint8Array, gray.length, false);
   const k = 1 - t;
-  for (let i = 0; i < gray.length; i++) if (gray[i] < mean[i] * k) mask[i] = 1;
+  // mean is 8.8 fixed point
+  for (let i = 0; i < gray.length; i++) mask[i] = gray[i] * 256 < mean[i] * k ? 1 : 0;
   return mask;
 }
 
@@ -165,8 +182,9 @@ function adaptiveThreshold(gray, mean, t) {
  * Segments survive: they are thicker than `thin` or shorter than `long`.
  */
 function removeThinLines(mask, w, h, thin, long) {
-  const hRun = new Uint16Array(w * h);
-  const vRun = new Uint16Array(w * h);
+  // run lengths capped at 255; every set pixel is written before it is read
+  const hRun = scratch('hRun', Uint8Array, w * h, false);
+  const vRun = scratch('vRun', Uint8Array, w * h, false);
   for (let y = 0; y < h; y++) {
     let x = 0;
     while (x < w) {
@@ -176,7 +194,7 @@ function removeThinLines(mask, w, h, thin, long) {
       }
       let e = x;
       while (e < w && mask[y * w + e]) e++;
-      for (let i = x; i < e; i++) hRun[y * w + i] = Math.min(65535, e - x);
+      for (let i = x; i < e; i++) hRun[y * w + i] = Math.min(255, e - x);
       x = e;
     }
   }
@@ -189,7 +207,7 @@ function removeThinLines(mask, w, h, thin, long) {
       }
       let e = y;
       while (e < h && mask[e * w + x]) e++;
-      for (let i = y; i < e; i++) vRun[i * w + x] = Math.min(65535, e - y);
+      for (let i = y; i < e; i++) vRun[i * w + x] = Math.min(255, e - y);
       y = e;
     }
   }
@@ -199,24 +217,48 @@ function removeThinLines(mask, w, h, thin, long) {
   }
 }
 
+// Work buffers reused across passes (each pass would otherwise allocate several
+// full-size arrays and leave them to the garbage collector).
+const scratchPool = new Map();
+/** Free the reused work buffers (call when a reading is finished). */
+export function releaseScratch() {
+  scratchPool.clear();
+}
+
+function scratch(name, Type, length, zero = true) {
+  let buf = scratchPool.get(name);
+  if (!buf || buf.length !== length || !(buf instanceof Type)) {
+    buf = new Type(length);
+    scratchPool.set(name, buf);
+  } else if (zero) buf.fill(0);
+  return buf;
+}
+
+/**
+ * 4-connected components of the mask. The mask doubles as the visited marker
+ * (set to 2) and one shared queue collects each component, so no per-pixel
+ * label array is needed. Pixel lists (Int32Array) are kept only for components
+ * small enough to be a glyph or part of one; larger ones (backgrounds, bezels)
+ * keep just their bounding box and area (`pixels: null`).
+ */
 function connectedComponents(mask, w, h) {
-  const labels = new Int32Array(w * h).fill(-1);
   const comps = [];
-  const stack = new Int32Array(w * h);
+  const queue = scratch('queue', Int32Array, w * h, false);
+  const maxW = w * 0.5;
+  const maxH = h * 0.9;
   for (let start = 0; start < w * h; start++) {
-    if (!mask[start] || labels[start] !== -1) continue;
+    if (mask[start] !== 1) continue;
     const id = comps.length;
-    const pixels = [];
-    let sp = 0;
-    stack[sp++] = start;
-    labels[start] = id;
+    let head = 0;
+    let tail = 0;
+    queue[tail++] = start;
+    mask[start] = 2;
     let minX = w;
     let minY = h;
     let maxX = 0;
     let maxY = 0;
-    while (sp > 0) {
-      const p = stack[--sp];
-      pixels.push(p);
+    while (head < tail) {
+      const p = queue[head++];
       const x = p % w;
       const y = (p / w) | 0;
       if (x < minX) minX = x;
@@ -224,24 +266,25 @@ function connectedComponents(mask, w, h) {
       if (y < minY) minY = y;
       if (y > maxY) maxY = y;
       // 4-connectivity keeps neighbouring LCD segments apart
-      if (x > 0 && mask[p - 1] && labels[p - 1] === -1) {
-        labels[p - 1] = id;
-        stack[sp++] = p - 1;
+      if (x > 0 && mask[p - 1] === 1) {
+        mask[p - 1] = 2;
+        queue[tail++] = p - 1;
       }
-      if (x < w - 1 && mask[p + 1] && labels[p + 1] === -1) {
-        labels[p + 1] = id;
-        stack[sp++] = p + 1;
+      if (x < w - 1 && mask[p + 1] === 1) {
+        mask[p + 1] = 2;
+        queue[tail++] = p + 1;
       }
-      if (y > 0 && mask[p - w] && labels[p - w] === -1) {
-        labels[p - w] = id;
-        stack[sp++] = p - w;
+      if (y > 0 && mask[p - w] === 1) {
+        mask[p - w] = 2;
+        queue[tail++] = p - w;
       }
-      if (y < h - 1 && mask[p + w] && labels[p + w] === -1) {
-        labels[p + w] = id;
-        stack[sp++] = p + w;
+      if (y < h - 1 && mask[p + w] === 1) {
+        mask[p + w] = 2;
+        queue[tail++] = p + w;
       }
     }
-    comps.push({ id, pixels, minX, minY, maxX, maxY });
+    const keep = maxX - minX + 1 <= maxW && maxY - minY + 1 <= maxH;
+    comps.push({ id, area: tail, pixels: keep ? queue.slice(0, tail) : null, minX, minY, maxX, maxY });
   }
   return comps;
 }
@@ -284,7 +327,8 @@ function segmentCandidates(comps, w, h, cropped = false, far = false) {
   for (const c of comps) {
     const bw = c.maxX - c.minX + 1;
     const bh = c.maxY - c.minY + 1;
-    const area = c.pixels.length;
+    const area = c.area;
+    if (!c.pixels) continue; // too large to be a glyph
     if (area < Math.max(12, (minDim * (far ? 0.0035 : 0.006)) ** 2)) continue;
     if (bh > h * (cropped ? 0.9 : 0.25) || bw > w * (cropped ? 0.5 : 0.3)) continue;
     if (c.minX === 0 || c.minY === 0 || c.maxX === w - 1 || c.maxY === h - 1) continue;
@@ -505,7 +549,7 @@ function decodeRow(row, w, s, mask) {
           const xi = Math.round(xs + s * yy);
           const yi = Math.round(yy);
           totals[z]++;
-          if (xi >= 0 && xi < w && mask.has(yi * w + xi)) hits[z]++;
+          if (xi >= 0 && xi < w && mask[yi * w + xi]) hits[z]++;
         }
       }
     }
@@ -546,7 +590,7 @@ function findDecimal(row, cands, w, slant) {
   for (const c of cands) {
     const bw = c.maxX - c.minX + 1;
     const bh = c.maxY - c.minY + 1;
-    const area = c.pixels.length;
+    const area = c.area;
     if (bw < 0.45 * t || bh < 0.45 * t || bw > 2.4 * t || bh > 2.4 * t) continue;
     if (area < 0.25 * t * t || area > 5 * t * t || area / (bw * bh) < 0.45) continue;
     const cy = (c.minY + c.maxY) / 2;
@@ -617,13 +661,14 @@ export function readPrepared(prep, opts = {}) {
   const digits = groupDigits(segs);
   const rows = groupRows(digits);
 
-  const segPixels = new Set();
-  for (const d of digits) for (const m of d.members) for (const p of m.pixels) segPixels.add(p);
+  // pixels of the digits' segments, for sampling the segment zones
+  const segPixels = scratch('segPixels', Uint8Array, w * prep.h);
+  for (const d of digits) for (const m of d.members) for (const p of m.pixels) segPixels[p] = 1;
 
   const used = new Set();
   for (const d of digits) for (const m of d.members) used.add(m.id);
   // size is checked against the stroke width in findDecimal
-  const dotCands = comps.filter((c) => !used.has(c.id) && c.pixels.length >= 3 && c.pixels.length < 20000);
+  const dotCands = comps.filter((c) => !used.has(c.id) && c.area >= 3 && c.area < 20000);
 
   const decoded = rows
     .map((r) => ({ ...decodeRow(r, w, slant, segPixels), ...findDecimal(r, dotCands, w, slant) }))

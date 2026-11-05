@@ -823,17 +823,30 @@ async function loadImage(file) {
   }
 }
 
-function drawScaled(img, maxDim) {
+/** Draw an image/canvas/video scaled to at most maxDim, into `into` if given (reused). */
+function drawScaled(img, maxDim, into = null) {
   // <video> reports its frame size in videoWidth/videoHeight (width is the CSS attribute)
   const w0 = img.videoWidth || img.naturalWidth || img.width;
   const h0 = img.videoHeight || img.naturalHeight || img.height;
   const s = Math.min(1, maxDim / Math.max(w0, h0));
-  const c = document.createElement('canvas');
-  c.width = Math.round(w0 * s);
-  c.height = Math.round(h0 * s);
+  const c = into ?? document.createElement('canvas');
+  const w = Math.round(w0 * s);
+  const h = Math.round(h0 * s);
+  if (c.width !== w) c.width = w;
+  if (c.height !== h) c.height = h;
   c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
   return c;
 }
+/** Working size for reading a type: scales are photographed from further away. */
+const readSize = (kind) => (MEASUREMENT_TYPES[kind].farDisplay ? 2400 : 1600);
+
+/** Scale the boxes of a reader result (to the photo canvas's coordinates). */
+function scaleResult(r, k) {
+  if (k === 1) return r;
+  const box = (b) => b && { x0: b.x0 * k, x1: b.x1 * k, y0: b.y0 * k, y1: b.y1 * k };
+  return { ...r, box: box(r.box), rows: r.rows.map((row) => ({ ...row, box: box(row.box), poly: row.poly?.map(([x, y]) => [x * k, y * k]) })) };
+}
+
 const canvasToBlob = (c, q = 0.82) => new Promise((res) => c.toBlob(res, 'image/jpeg', q));
 
 async function renderEditor(root, { arg, params }) {
@@ -855,8 +868,9 @@ async function renderEditor(root, { arg, params }) {
     source: editing?.source ?? 'manual',
     editedAt: {}, // field -> time the user last typed in it
     readStartedAt: 0,
-    photoImg: null, // decoded photo, kept to redraw the analysis canvas when the type changes
-    photoCanvas: null, // analysis canvas (1600 px, 2400 px for far-away displays)
+    // the photo, at most 2400 px (enough for every type; blood pressure is read
+    // from a smaller copy made at read time). The decoded original is not kept.
+    photoCanvas: null,
     photoBlob: null, // compressed photo for storage
     overlay: null, // detected boxes
     crop: null,
@@ -901,10 +915,7 @@ async function renderEditor(root, { arg, params }) {
                   s.uncertain = new Set();
                   live.last = null; // a live scan in progress starts over for the new type
                   e.currentTarget.parentElement.querySelectorAll('button').forEach((b, i) => b.setAttribute('aria-pressed', String(TYPE_LIST[i].id === t)));
-                  if (s.photoImg) {
-                    s.photoCanvas = drawScaled(s.photoImg, MEASUREMENT_TYPES[t].farDisplay ? 2400 : 1600);
-                    s.crop = null;
-                  }
+                  s.crop = null;
                   if (s.photoCanvas) runOCR();
                   drawForm();
                 },
@@ -925,10 +936,11 @@ async function renderEditor(root, { arg, params }) {
     s.status = { busy: true, text: 'Loading photo…' };
     drawPhoto();
     const img = await loadImage(file);
-    // scales are photographed from further away: keep more pixels for the small display
-    s.photoImg = img;
-    s.photoCanvas = drawScaled(img, MEASUREMENT_TYPES[s.type].farDisplay ? 2400 : 1600);
-    if (state.settings.keepPhotos) s.photoBlob = await canvasToBlob(drawScaled(img, 1024));
+    // keep 2400 px (scales are photographed from further away) and let the
+    // decoded original go: a 12 MP photo decodes to about 48 MB
+    s.photoCanvas = drawScaled(img, 2400);
+    if (state.settings.keepPhotos) s.photoBlob = await canvasToBlob(drawScaled(s.photoCanvas, 1024));
+    img.close?.(); // ImageBitmap
     // photos picked from the gallery keep their own capture time
     if (!editing && file.lastModified && Date.now() - file.lastModified > 5 * 60000) s.when = new Date(file.lastModified);
     s.crop = null;
@@ -942,9 +954,14 @@ async function renderEditor(root, { arg, params }) {
     s.readStartedAt = Date.now();
     drawPhoto();
     const c = s.photoCanvas;
-    const image = c.getContext('2d').getImageData(0, 0, c.width, c.height);
+    // read at the size the type needs (temporary copy), in photo-canvas coordinates
+    const f = Math.min(1, readSize(s.type) / Math.max(c.width, c.height));
+    const src = f < 1 ? drawScaled(c, readSize(s.type)) : c;
+    const image = src.getContext('2d').getImageData(0, 0, src.width, src.height);
+    const crop = s.crop && { x: s.crop.x * f, y: s.crop.y * f, w: s.crop.w * f, h: s.crop.h * f };
     try {
-      const { result, ms } = await readInWorker(image, s.type, s.crop);
+      const { result: r, ms } = await readInWorker(image, s.type, crop);
+      const result = scaleResult(r, 1 / f);
       s.overlay = result;
       s.uncertain = new Set(result.uncertain ?? []);
       s.ocrRaw = { ...result.values, engine: 'on-device', score: result.score };
@@ -1008,7 +1025,7 @@ async function renderEditor(root, { arg, params }) {
   const liveSupported = !!navigator.mediaDevices?.getUserMedia;
   // gen: each start/stop gets a new number, so a loop of an earlier scan that is
   // still waiting for the worker ends instead of running alongside the new one
-  const live = { on: false, gen: 0, stream: null, video: null, overlay: null, status: null, last: null, same: 0, frames: 0, errors: 0 };
+  const live = { on: false, gen: 0, stream: null, video: null, overlay: null, status: null, last: null, same: 0, frames: 0, errors: 0, frame: null };
 
   async function startLive() {
     stopLive();
@@ -1065,7 +1082,8 @@ async function renderEditor(root, { arg, params }) {
       // the type can be switched while scanning: read each frame for the current one
       const kind = s.type;
       const type = MEASUREMENT_TYPES[kind];
-      const frame = drawScaled(v, type.farDisplay ? 2400 : 1600);
+      live.frame = drawScaled(v, readSize(kind), live.frame);
+      const frame = live.frame;
       const image = frame.getContext('2d').getImageData(0, 0, frame.width, frame.height);
       let result;
       try {
@@ -1095,7 +1113,7 @@ async function renderEditor(root, { arg, params }) {
       if (key && (sure ? live.same >= 2 : live.same >= 3)) {
         // stable: freeze this frame and fill in the values for checking
         stopLive();
-        s.photoImg = frame;
+        live.frame = null; // the frame becomes the photo
         s.photoCanvas = frame;
         if (state.settings.keepPhotos) s.photoBlob = await canvasToBlob(drawScaled(frame, 1024));
         s.crop = null;
@@ -1208,7 +1226,9 @@ async function renderEditor(root, { arg, params }) {
     }
     // analysis canvas with overlay
     const c = s.photoCanvas;
-    canvasEl = h('canvas', { width: c.width, height: c.height, 'aria-label': 'Photo of the device display' });
+    // shown at most 1280 px wide (the screen shows it smaller); drawn in photo coordinates
+    const d = Math.min(1, 1280 / Math.max(c.width, c.height));
+    canvasEl = h('canvas', { width: Math.round(c.width * d), height: Math.round(c.height * d), 'aria-label': 'Photo of the device display' });
     paintCanvas();
     attachCropper(canvasEl);
     const status = s.status
@@ -1247,6 +1267,7 @@ async function renderEditor(root, { arg, params }) {
   function paintCanvas(dragRect) {
     const c = s.photoCanvas;
     const ctx = canvasEl.getContext('2d');
+    ctx.setTransform(canvasEl.width / c.width, 0, 0, canvasEl.height / c.height, 0, 0);
     ctx.drawImage(c, 0, 0);
     const lw = Math.max(2, c.width / 300);
     ctx.lineWidth = lw;
@@ -1304,7 +1325,8 @@ async function renderEditor(root, { arg, params }) {
     let rect = null;
     const pos = (e) => {
       const b = cv.getBoundingClientRect();
-      return { x: ((e.clientX - b.left) / b.width) * cv.width, y: ((e.clientY - b.top) / b.height) * cv.height };
+      // in photo-canvas coordinates (the shown canvas may be smaller)
+      return { x: ((e.clientX - b.left) / b.width) * s.photoCanvas.width, y: ((e.clientY - b.top) / b.height) * s.photoCanvas.height };
     };
     cv.addEventListener('pointerdown', (e) => {
       start = pos(e);
@@ -1319,7 +1341,7 @@ async function renderEditor(root, { arg, params }) {
     });
     cv.addEventListener('pointerup', () => {
       start = null;
-      if (rect && rect.w > cv.width * 0.08 && rect.h > cv.height * 0.05) {
+      if (rect && rect.w > s.photoCanvas.width * 0.08 && rect.h > s.photoCanvas.height * 0.05) {
         s.crop = rect;
         runOCR();
       } else paintCanvas();

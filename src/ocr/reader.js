@@ -2,7 +2,7 @@
 // (different thresholds, small rotations, zoom-in on the detected display)
 // and keeps the most plausible reading for the requested measurement type.
 
-import { prepare, readPrepared, displayCandidates, pickDisplayStack, cropImage } from './sevenSegment.js';
+import { prepare, readPrepared, displayCandidates, pickDisplayStack, cropImage, releaseScratch } from './sevenSegment.js';
 import { MEASUREMENT_TYPES } from '../types.js';
 
 /** Rotate by k quarter turns clockwise (swaps width and height for odd k). */
@@ -138,9 +138,18 @@ export function readDisplay(img, kind = 'bp', opts = {}) {
   const passes = [];
 
   // ---- views
+  // lazily computed images that can be released again (and are recomputed if
+  // needed later): turned copies of a large photo are 13 MB each
   const memo = (f) => {
     let v;
-    return () => (v ??= f());
+    const get = () => (v ??= f());
+    get.release = () => (v = undefined);
+    return get;
+  };
+  const release = (view) => {
+    view.image.release?.();
+    view.full.release?.();
+    if (prepCache.view === view) prepCache = { key: null, prep: null, view: null };
   };
   const photoView = { key: 'photo', image: () => img, factor: 1, full: () => img, toPhoto: (p) => p, rotation: 0 };
   const small = memo(() => downscale(img, 1000));
@@ -178,13 +187,16 @@ export function readDisplay(img, kind = 'bp', opts = {}) {
   // ---- one reading pass (prepared images are shared between thresholds)
   // Only the most recent prepared image is kept: passes on the same view run back
   // to back, and keeping all of them costs hundreds of MB on large photos.
-  let prepCache = { key: null, prep: null };
+  let prepCache = { key: null, prep: null, view: null };
   const attempt = (view, readOpts) => {
     const image = view.image();
     // a crop view is read as a crop (glyphs may fill it; small crops are enlarged)
     const crop = readOpts.crop ?? (view.isCrop ? { x: 0, y: 0, w: image.width, h: image.height } : null);
     const pkey = `${view.key}|${readOpts.maxDim ?? 900}|${readOpts.invert ? 1 : 0}|${crop ? [crop.x, crop.y, crop.w, crop.h].map(Math.round).join(',') : ''}`;
-    if (prepCache.key !== pkey) prepCache = { key: pkey, prep: prepare(image, { maxDim: readOpts.maxDim ?? 900, invert: readOpts.invert, crop }) };
+    if (prepCache.key !== pkey) {
+      prepCache = { key: null, prep: null, view: null }; // free the previous one first
+      prepCache = { key: pkey, prep: prepare(image, { maxDim: readOpts.maxDim ?? 900, invert: readOpts.invert, crop }), view };
+    }
     const prep = prepCache.prep;
     const { rows } = readPrepared(prep, { threshold: readOpts.threshold ?? 0.18, far: readOpts.far });
     // multi-value displays (blood pressure): the stacked rows; single-value: every candidate row
@@ -199,12 +211,22 @@ export function readDisplay(img, kind = 'bp', opts = {}) {
     }
     const pass = { ...mapped, rows: stack, box: stack.length ? stackBox(stack) : null, view, readOpts };
     passes.push(pass);
+    if (globalThis.__memTrace) { const m = process.memoryUsage(); globalThis.__memTrace.push(m.heapUsed + m.arrayBuffers); }
     return pass;
   };
   // A reading on a display candidate that two thresholds agree on is accepted
   // even below a perfect score (small digits score lower by design).
   let accepted = false;
   const good = () => accepted || passes.some((p) => p.score >= 1);
+  // best first; on equal plausibility prefer readings that saw the digits larger
+  // (display crops, then higher working resolution)
+  const detail = (p) => (p.view.isCrop || p.readOpts.crop ? 2 : 0) + (p.readOpts.maxDim ?? 900) / 2400;
+  const better = (a, b) => b.score - a.score || detail(b) - detail(a);
+  // done with a view: free its images unless it holds the best reading so far
+  const doneWith = (view) => {
+    const top = passes.reduce((a, p) => (!a || better(a, p) > 0 ? p : a), null);
+    if (top?.view !== view) release(view);
+  };
   const base = opts.crop ? { crop: opts.crop } : {};
 
   // 1. quick pass (close-ups of a monitor)
@@ -219,8 +241,9 @@ export function readDisplay(img, kind = 'bp', opts = {}) {
     let n = 0;
     for (const invert of [false, true]) {
       if (good()) break;
-      const prep = prepare(img, { maxDim: type.farDisplay ? 2400 : 1600, invert });
-      for (const cb of displayCandidates(prep, { max: 2 })) {
+      // the prepared full image is only needed to find the candidates
+      const cands = displayCandidates(prepare(img, { maxDim: type.farDisplay ? 2400 : 1600, invert }), { max: 2 });
+      for (const cb of cands) {
         if (good()) break;
         const i = n++;
         const bw = cb.x1 - cb.x0;
@@ -237,6 +260,7 @@ export function readDisplay(img, kind = 'bp', opts = {}) {
             const complete = Object.keys(first.values).length === type.fields.length;
             if (same && complete && Math.min(first.score, second.score) >= 0.85) accepted = true;
           }
+          doneWith(view);
           if (good()) break;
         }
       }
@@ -274,12 +298,15 @@ export function readDisplay(img, kind = 'bp', opts = {}) {
     const f = small().factor;
     const crop = c && { x: c.x / f, y: c.y / f, w: c.w / f, h: c.h / f };
     for (const rot of [-6, 6, -10, 10]) {
+      const view = rotView(rot);
       for (const [threshold, invert] of [[0.18, false], [0.12, false], [0.18, true]]) {
-        attempt(rotView(rot), { crop, threshold, invert });
+        attempt(view, { crop, threshold, invert });
         if (good()) break;
       }
+      doneWith(view);
       if (good()) break;
     }
+    small.release(); // the downscaled copy is only needed for these
   }
   // photo sideways or upside down (e.g. EXIF orientation not applied): quarter
   // turns. Far-away displays need the full resolution, and both sideways
@@ -293,14 +320,12 @@ export function readDisplay(img, kind = 'bp', opts = {}) {
         const ps = attempt(view, { threshold, ...extra });
         if (ps.score >= 1) break;
       }
+      doneWith(view);
       if (good() && k !== 1) break;
     }
   }
 
-  // best first; on equal plausibility prefer readings that saw the digits larger
-  // (display crops, then higher working resolution)
-  const detail = (p) => (p.view.isCrop || p.readOpts.crop ? 2 : 0) + (p.readOpts.maxDim ?? 900) / 2400;
-  passes.sort((a, b) => b.score - a.score || detail(b) - detail(a));
+  passes.sort(better);
   let best = passes[0];
 
   // 4. zoom: re-read just the display region at higher resolution
@@ -334,7 +359,12 @@ export function readDisplay(img, kind = 'bp', opts = {}) {
     }
   }
 
-  if (!best) return { values: {}, score: 0, confidence: 0, rows: [], box: null, rotation: 0, uncertain: [] };
+  // single-number displays: a weak best guess is texture, not a reading
+  if (best && !multi && best.score < 0.4) best = null;
+  if (!best) {
+    releaseScratch();
+    return { values: {}, score: 0, confidence: 0, rows: [], box: null, rotation: 0, uncertain: [] };
+  }
 
   // 5. vote digit by digit across thresholds of the same view and area
   let uncertain = [];
@@ -383,6 +413,8 @@ export function readDisplay(img, kind = 'bp', opts = {}) {
     orientation: best.view.rotation,
     uncertain,
   };
+  // the worker keeps running between readings: free the work buffers
+  releaseScratch();
   if (opts.debug)
     result.passes = passes.map((p) => ({ score: p.score, values: p.values, rows: p.rows.map((r) => r.text), view: p.view.key, opts: { ...p.readOpts, crop: p.readOpts.crop && 'crop' }, box: p.box }));
   return result;
