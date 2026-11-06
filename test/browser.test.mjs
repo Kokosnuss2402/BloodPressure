@@ -353,6 +353,32 @@ try {
 
   await check('no uncaught page errors', async () => assert.deepEqual(errors, []));
 
+  // ---------------- Apple Health import (text from the iPhone Shortcut)
+  await check('e2e: Apple Health import via link and via clipboard, duplicates skipped', async () => {
+    const hctx = await browser.newContext({ viewport: { width: 390, height: 844 }, permissions: ['clipboard-read', 'clipboard-write'] });
+    const hp = await hctx.newPage();
+    const text = ['W|2026-11-04T07:30:00+01:00|78,6|kg', 'W|2026-11-05T07:31:00+01:00|78.4|kg', 'G|2026-11-05T07:40:00+01:00|5.6|mmol<180.15588000005408>/L'].join('\n');
+    await hp.goto(base + '#/import-health?d=' + encodeURIComponent(text));
+    await hp.waitForSelector('text=Ready to import');
+    assert.match(await hp.locator('#view').innerText(), /New: 2 weight, 1 blood sugar\./);
+    await hp.getByRole('button', { name: 'Import 3 readings' }).click();
+    await hp.waitForSelector('.entry');
+    assert.equal(await hp.locator('.entry', { hasText: 'Apple Health' }).count(), 3);
+    assert.ok(!(await hp.evaluate(() => location.hash)).includes('d='), 'data removed from the address');
+    // the same link again: nothing new
+    await hp.goto(base + '#/import-health?d=' + encodeURIComponent(text));
+    await hp.waitForSelector('text=Ready to import');
+    assert.match(await hp.locator('#view').innerText(), /No new readings/);
+    // clipboard (Home Screen app): one new reading
+    await hp.goto(base + '#/import-health');
+    await hp.evaluate((t) => navigator.clipboard.writeText(t), text + '\nW|2026-11-06T07:29:00+01:00|78.1|kg');
+    await hp.getByRole('button', { name: 'Paste from Apple Health' }).click();
+    await hp.waitForSelector('text=Ready to import');
+    assert.match(await hp.locator('#view').innerText(), /New: 1 weight, 0 blood sugar\. 3 already in the app/);
+    if (shots) await hp.screenshot({ path: path.join(shots, '11-health-import.png'), fullPage: true });
+    await hctx.close();
+  });
+
   // ---------------- 4. live scan with a fake camera (a video of a synthetic monitor)
   await check('e2e: live scan reads the display from the camera', async () => {
     const frame = await page.evaluate(async () => {

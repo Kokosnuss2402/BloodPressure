@@ -17,6 +17,7 @@ import { toCSV, localDate } from './csv.js';
 import { averages, byTimeOfDay, inLastDays, trend, allTags, unusualVsHistory } from './stats.js';
 import { renderChart, markerSVG } from './chart.js';
 import { icon, iconSVG } from './icons.js';
+import { parseHealthText, planHealthImport } from './health.js';
 import { syncNow, scheduleSync, getSyncConfig, testConnection, resetSyncState, setPassphrase, forgetKey } from './sync.js';
 
 // ---------------------------------------------------------------- helpers
@@ -159,6 +160,7 @@ const routes = {
   history: { title: 'History', render: renderHistory },
   charts: { title: 'Charts', render: renderCharts },
   settings: { title: 'Settings', render: renderSettings },
+  'import-health': { title: 'Apple Health', render: renderImportHealth },
   // old links to per-type pages: select the type on the overview instead
   type: {
     title: 'Overview',
@@ -575,7 +577,9 @@ function entryRow(m) {
     vals = h('div', { class: 'vals' }, `${formatGlucose(m.values.glucose, unit)} `, h('small', {}, unit));
   }
   const ctx = m.type === 'glucose' ? GLUCOSE_CONTEXTS.find((c) => c.id === m.values.context)?.label : null;
-  const meta = [t.shortLabel, ctx, ...(m.tags ?? []).map((x) => `#${x}`), m.note ? 'note' : null, m.hasPhoto ? 'photo' : null].filter(Boolean).join(' · ');
+  const meta = [t.shortLabel, ctx, ...(m.tags ?? []).map((x) => `#${x}`), m.note ? 'note' : null, m.hasPhoto ? 'photo' : null, m.source === 'apple-health' ? 'Apple Health' : null]
+    .filter(Boolean)
+    .join(' · ');
   return h(
     'button',
     { class: 'entry', onclick: () => (location.hash = `#/edit/${m.id}`) },
@@ -1600,6 +1604,129 @@ async function renderEditor(root, { arg, params }) {
   return cleanup;
 }
 
+// ---------------------------------------------------------------- Apple Health import
+
+/**
+ * Weight and blood sugar from Apple Health, handed over by an iPhone Shortcut
+ * as text: in the link (#/import-health?d=...) or on the clipboard. Nothing is
+ * saved before the user confirms the preview.
+ */
+function renderImportHealth(root, { params }) {
+  const importLink = `${location.origin}${location.pathname}#/import-health?d=`;
+  const preview = h('div');
+  const fromLink = params.get('d');
+
+  const show = (text) => {
+    const { items, errors } = parseHealthText(text);
+    const { add, skip } = planHealthImport(items, state.measurements);
+    const unit = state.settings.weightUnit;
+    const gUnit = state.settings.glucoseUnit;
+    const count = (type) => add.filter((a) => a.type === type).length;
+    preview.replaceChildren(
+      h(
+        'div',
+        { class: 'card stack' },
+        h('h2', { style: { margin: 0 } }, 'Ready to import'),
+        h(
+          'p',
+          { style: { margin: 0 } },
+          add.length
+            ? `New: ${count('weight')} weight, ${count('glucose')} blood sugar.`
+            : 'No new readings: everything is already in the app.',
+          skip.length ? ` ${skip.length} already in the app (skipped).` : '',
+          errors.length ? ` ${errors.length} line${errors.length === 1 ? '' : 's'} could not be read.` : '',
+        ),
+        add.length
+          ? h(
+              'div',
+              { class: 'health-list' },
+              add.slice(-12).reverse().map((a) => {
+                const d = new Date(a.timestamp);
+                const v = a.type === 'weight' ? `${formatWeight(a.values.weight, unit)} ${unit}` : `${formatGlucose(a.values.glucose, gUnit)} ${gUnit}`;
+                return h('div', { class: 'tag-row' }, h('span', {}, a.type === 'weight' ? 'Weight' : 'Blood sugar'), h('span', { class: 'muted small' }, `${d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' })} ${fmtTime(d)}`), h('b', {}, v));
+              }),
+              add.length > 12 ? h('div', { class: 'muted small' }, `… and ${add.length - 12} older`) : null,
+            )
+          : null,
+        add.length
+          ? h(
+              'button',
+              {
+                class: 'btn primary block',
+                onclick: async (e) => {
+                  e.currentTarget.disabled = true;
+                  for (const a of add) await saveMeasurement({ ...a, tags: [], note: '', source: 'apple-health' });
+                  await reload();
+                  afterChange();
+                  toast(`Imported ${add.length} reading${add.length === 1 ? '' : 's'} from Apple Health`);
+                  Object.assign(state.historyFilter, { type: 'all', days: 0, tag: null });
+                  location.replace('#/history'); // drop the data from the address
+                },
+              },
+              `Import ${add.length} reading${add.length === 1 ? '' : 's'}`,
+            )
+          : null,
+      ),
+    );
+    preview.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+
+  const area = h('textarea', { placeholder: 'W|2026-11-05T07:31:00+01:00|78.4|kg', rows: '3', 'aria-label': 'Text from the Shortcut' });
+  const paste = async () => {
+    try {
+      const text = await navigator.clipboard.readText();
+      area.value = text;
+      show(text);
+    } catch {
+      toast('Could not read the clipboard – paste the text into the box instead.');
+      area.focus();
+    }
+  };
+  const copyLink = async () => {
+    try {
+      await navigator.clipboard.writeText(importLink);
+      toast('Import link copied');
+    } catch {
+      toast(importLink);
+    }
+  };
+  const step = (n, ...content) => h('li', {}, ...content);
+
+  root.append(
+    h(
+      'div',
+      { class: 'card stack' },
+      h('p', { style: { margin: 0 } }, 'Brings weight and blood sugar from Apple Health into this app. An iPhone Shortcut reads them from the Health app and hands them over here; they stay on your phone. You see what will be imported before anything is saved.'),
+      h('button', { class: 'btn primary block', onclick: paste }, 'Paste from Apple Health'),
+      h('label', { class: 'field' }, h('span', {}, 'Or paste the text here'), area),
+      h('button', { class: 'btn block', onclick: () => show(area.value) }, 'Check text'),
+    ),
+    preview,
+    h('div', { class: 'section-title' }, 'Set up the Shortcut (once)'),
+    h(
+      'div',
+      { class: 'card stack small' },
+      h(
+        'ol',
+        { class: 'steps' },
+        step(1, 'Open the Shortcuts app, tap + to make a new shortcut and name it "Vitals import".'),
+        step(2, 'Add "Find Health Samples": type ', h('b', {}, 'Weight'), ', filter "Start Date is in the last 30 days".'),
+        step(3, 'Add "Repeat with Each" for those samples. Inside it, add a "Text" action with: ', h('code', { class: 'selectable' }, 'W|Start Date|Value|Unit'), " – insert the Repeat Item's Start Date (date format 'ISO 8601'), Value and Unit as variables."),
+        step(4, 'Repeat steps 2–3 for type ', h('b', {}, 'Blood Glucose'), ', with ', h('code', { class: 'selectable' }, 'G|Start Date|Value|Unit'), '.'),
+        step(5, 'Add "Combine Text" for each "Repeat Results" (separator: New Lines), then one "Text" action with both results on separate lines.'),
+        step(6, 'Add "Copy to Clipboard" with that text. Then open this app and tap "Paste from Apple Health" above.'),
+        step(7, 'If you use the app in Safari instead of from the Home Screen: add "URL Encode" and "Open URLs" with the import link below followed by the encoded text – the readings then open here directly.'),
+      ),
+      h('div', { class: 'row' }, h('code', { class: 'selectable import-link' }, importLink), h('button', { class: 'btn small', onclick: copyLink }, 'Copy link')),
+      h('p', { class: 'muted', style: { margin: 0 } }, 'Run it whenever you like, or as a daily automation (Shortcuts > Automation > Time of Day). Readings already imported are skipped, so running it again is safe. Imported blood sugar is saved as "Other / random"; you can change it per reading.'),
+    ),
+  );
+  if (fromLink) {
+    area.value = fromLink;
+    show(fromLink);
+  }
+}
+
 // ---------------------------------------------------------------- settings
 
 async function renderSettings(root) {
@@ -1822,6 +1949,13 @@ async function renderSettings(root) {
   const keyIn = h('input', { type: 'password', value: st.claudeKey, placeholder: 'sk-ant-…', autocomplete: 'off' });
   keyIn.addEventListener('change', () => updateSetting('claudeKey', keyIn.value.trim()));
   root.append(
+    h('div', { class: 'section-title' }, 'Apple Health'),
+    h(
+      'div',
+      { class: 'card stack' },
+      h('p', { class: 'small muted', style: { margin: 0 } }, 'Import weight and blood sugar from Apple Health with an iPhone Shortcut.'),
+      h('a', { class: 'btn block', href: '#/import-health' }, 'Import from Apple Health'),
+    ),
     h('div', { class: 'section-title' }, 'AI reading (optional)'),
     h(
       'div',

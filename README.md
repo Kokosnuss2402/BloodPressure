@@ -27,6 +27,10 @@ the values, add tags, then save.
 - **Blood sugar** in mg/dL or mmol/L, with fasting / before / after meal context.
 - **Weight** in kg or lb, read from a bathroom-scale photo taken from standing height (small, far-away
   display, LCD or LED, decimal point detected). With your height set, BMI and its WHO category are shown.
+- **Apple Health import (weight and blood sugar)**: websites cannot read Apple Health, so an iPhone
+  Shortcut reads the samples and hands them over as text (clipboard, or the import link when the app
+  is used in Safari). The app shows what is new before saving and skips readings it already has.
+  Setup steps are in the app under Settings > Apple Health.
 - **CSV export** (comma or semicolon for European Excel), JSON backup and import.
 - **Cloud backup** to your own **Cloudflare D1** database. The browser database (IndexedDB) stays
   the main store. Two-way sync lets a second device restore your data, and deletions sync too.

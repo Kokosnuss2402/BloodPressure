@@ -987,6 +987,34 @@ main {
   justify-content: center;
   color: var(--text-2);
 }
+.steps {
+  margin: 0;
+  padding-left: 20px;
+}
+.steps li + li {
+  margin-top: 8px;
+}
+.steps code,
+.import-link {
+  font-size: 0.85em;
+  background: var(--surface-2);
+  border-radius: 6px;
+  padding: 1px 5px;
+}
+.steps code {
+  white-space: nowrap;
+}
+.import-link {
+  word-break: break-all;
+}
+.import-link {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+}
+.health-list .tag-row {
+  border-bottom: 1px solid var(--border);
+}
 .inline-input {
   width: 84px;
   min-height: 40px;
