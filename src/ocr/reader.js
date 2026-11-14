@@ -181,7 +181,7 @@ export function readDisplay(img, kind = 'bp', opts = {}) {
       const q = inCrop(p);
       return [q[0] + pix.x, q[1] + pix.y];
     };
-    return { key: `c${i}q${k}r${deg}`, image: turned, factor: 1, full: turned, toPhoto: back, rotation: deg || k * 90, isCrop: true };
+    return { key: `c${i}q${k}r${deg}`, image: turned, factor: 1, full: turned, toPhoto: back, rotation: deg || k * 90, isCrop: true, crop: { i, pix, k, deg } };
   };
 
   // ---- one reading pass (prepared images are shared between thresholds)
@@ -328,6 +328,38 @@ export function readDisplay(img, kind = 'bp', opts = {}) {
   passes.sort(better);
   let best = passes[0];
 
+  // 3a. glucose meters: the reading is the largest number on the device. A display
+  // candidate crop can hold only a small secondary number (date, clock, memory), so
+  // read the whole photo once with the same polarity and prefer a clearly taller
+  // reading. (Not for scales: there the display is small and the floor is large.)
+  if (best && !multi && !type.farDisplay && best.view.isCrop && !opts.crop) {
+    const height = (p) => Math.max(0, ...p.rows.map((r) => r.height));
+    const whole = attempt(photoView, { threshold: 0.18, invert: best.readOpts.invert });
+    if (whole.score >= 0.8 && height(whole) > 1.5 * height(best)) best = whole;
+  }
+
+  // 3b. straighten: when the digit rows of the chosen reading are tilted (photo
+  // taken at an angle), re-read a copy rotated by the measured angle. Tilted
+  // digits are decoded less reliably and can still give a plausible misreading.
+  const tiltOf = (p) => {
+    const t = p.rows.map((r) => r.tilt ?? 0).sort((a, b) => a - b);
+    return t.length ? t[Math.floor(t.length / 2)] : 0;
+  };
+  const tilt = best?.rows.length ? tiltOf(best) : 0;
+  const c = best?.view.crop;
+  if (Math.abs(tilt) >= 3 && Math.abs(tilt) <= 25 && ((best.view === photoView && !opts.crop) || (c && c.k === 0))) {
+    const deg = Math.round((c ? c.deg : 0) - tilt);
+    const view = c ? cropView(c.i, c.pix, 0, deg) : rotView(deg);
+    let top = null;
+    for (const threshold of [0.18, 0.12]) {
+      const p = attempt(view, { threshold, invert: best.readOpts.invert, maxDim: best.readOpts.maxDim });
+      if (!top || better(top, p) > 0) top = p;
+      if (p.score >= 1) break;
+    }
+    if (top.score >= best.score - 0.05 && top.rows.length && Math.abs(tiltOf(top)) < Math.abs(tilt)) best = top;
+    else doneWith(view);
+  }
+
   // 4. zoom: re-read just the display region at higher resolution
   if (best?.box && !best.view.isCrop) {
     const b = best.box;
@@ -416,7 +448,7 @@ export function readDisplay(img, kind = 'bp', opts = {}) {
   // the worker keeps running between readings: free the work buffers
   releaseScratch();
   if (opts.debug)
-    result.passes = passes.map((p) => ({ score: p.score, values: p.values, rows: p.rows.map((r) => r.text), view: p.view.key, opts: { ...p.readOpts, crop: p.readOpts.crop && 'crop' }, box: p.box }));
+    result.passes = passes.map((p) => ({ score: p.score, values: p.values, rows: p.rows.map((r) => r.text), tilts: p.rows.map((r) => (r.tilt ?? 0).toFixed(1)), view: p.view.key, opts: { ...p.readOpts, crop: p.readOpts.crop && 'crop' }, box: p.box }));
   return result;
 }
 

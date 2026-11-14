@@ -176,3 +176,105 @@ export function syntheticScale({ value = '72.4', width = 2400, height = 1800, se
   ctx.putImageData(img, 0, 0);
   return c;
 }
+
+// clock such as "6:59": hours, a colon of two dots, minutes
+function drawClock(ctx, text, right, y, h, slant) {
+  const [hh, mm] = text.split(':');
+  const w = h * 0.52;
+  const t = h * 0.11;
+  drawNumber(ctx, mm, right, y, h, slant);
+  let x = right - mm.length * w - (mm.length - 1) * h * 0.16;
+  const d = t * 1.2;
+  const cx = x - h * 0.2;
+  const sk = (yy) => slant * (y + h - yy);
+  ctx.fillRect(cx - d / 2 + sk(y + h * 0.3), y + h * 0.3 - d / 2, d, d);
+  ctx.fillRect(cx - d / 2 + sk(y + h * 0.7), y + h * 0.7 - d / 2, d, d);
+  drawNumber(ctx, hh, cx - h * 0.2, y, h, slant);
+}
+
+/**
+ * A blood glucose meter: one large reading (mg/dL, or mmol/L with a decimal
+ * point), a small clock and date, unit and label text, as on typical meters.
+ * Options: backlit (bright blue-white LCD), oled (bright digits on black),
+ * glare, rotate (degrees), far (meter small in a large frame), lowRes.
+ */
+export function syntheticGlucose({ value = '92', clock = '6:59', date = '11 14', seed = 2, slant = 0.07, backlit = false, oled = false, glare = false, rotate = 0, far = false, lowRes = false }) {
+  let r = seed;
+  const rnd = () => ((r = (r * 16807) % 2147483647) / 2147483647);
+  const W = 900;
+  const H = 1300;
+  const m = document.createElement('canvas');
+  m.width = W;
+  m.height = H;
+  const ctx = m.getContext('2d');
+  ctx.fillStyle = '#e4e1da';
+  ctx.fillRect(0, 0, W, H);
+  ctx.save();
+  ctx.translate(W / 2, H / 2);
+  ctx.rotate((rotate * Math.PI) / 180);
+  ctx.translate(-W / 2, -H / 2);
+  // meter body, LCD window and buttons
+  ctx.fillStyle = '#26272b';
+  ctx.beginPath();
+  ctx.roundRect(110, 120, 680, 1080, 140);
+  ctx.fill();
+  const lcd = oled ? ['#050607', '#0b0c0e'] : backlit ? ['#eef5fb', '#c9dceb'] : ['#b9bca9', '#949885'];
+  const g = ctx.createLinearGradient(170, 220, 730, 900);
+  g.addColorStop(0, lcd[0]);
+  g.addColorStop(1, lcd[1]);
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.roundRect(170, 220, 560, 700, 30);
+  ctx.fill();
+  ctx.fillStyle = '#3a3b40';
+  for (const x of [230, 400, 570]) {
+    ctx.beginPath();
+    ctx.ellipse(x + 50, 1060, 70, 45, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  const ink = oled ? '#f2f6ff' : '#17181a';
+  ctx.fillStyle = ink;
+  ctx.font = 'bold 34px sans-serif';
+  ctx.fillText('GLU', 600, 290);
+  ctx.font = 'bold 30px sans-serif';
+  ctx.fillText(value.includes('.') ? 'mmol/L' : 'mg/dL', value.includes('.') ? 560 : 580, 640);
+  drawNumber(ctx, value, 690, 320, 270, slant);
+  if (date) drawNumber(ctx, date.replace(' ', ''), 380, 250, 46, slant);
+  if (clock) drawClock(ctx, clock, 600, 760, 70, slant);
+  ctx.restore();
+  // glare: a bright soft spot over part of the display
+  if (glare) {
+    const gl = ctx.createRadialGradient(330, 420, 10, 330, 420, 200);
+    gl.addColorStop(0, 'rgba(255,255,255,0.55)');
+    gl.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = gl;
+    ctx.fillRect(0, 0, W, H);
+  }
+  // shadow
+  ctx.fillStyle = 'rgba(0,0,0,0.18)';
+  ctx.beginPath();
+  ctx.ellipse(620 + rnd() * 60, 700, 200, 360, -0.3, 0, Math.PI * 2);
+  ctx.fill();
+  // final photo: the meter small in a large frame, or a low-resolution photo
+  let out = m;
+  if (far || lowRes) {
+    out = document.createElement('canvas');
+    const k = far ? 0.45 : 0.36;
+    out.width = far ? 2000 : Math.round(W * k);
+    out.height = far ? 1500 : Math.round(H * k);
+    const o = out.getContext('2d');
+    o.fillStyle = '#8c8577';
+    o.fillRect(0, 0, out.width, out.height);
+    o.drawImage(m, far ? 700 : 0, far ? 300 : 0, W * k, H * k);
+  }
+  const o = out.getContext('2d');
+  const img = o.getImageData(0, 0, out.width, out.height);
+  for (let i = 0; i < img.data.length; i += 4) {
+    const n = (rnd() - 0.5) * 22;
+    img.data[i] += n;
+    img.data[i + 1] += n;
+    img.data[i + 2] += n;
+  }
+  o.putImageData(img, 0, 0);
+  return out;
+}

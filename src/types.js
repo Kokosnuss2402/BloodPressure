@@ -208,7 +208,13 @@ export const MEASUREMENT_TYPES = {
         if (r.decimals > 0) return toMgdl(r.number, 'mmol/L');
         return st?.glucoseUnit === 'mmol/L' ? toMgdl(r.value / 10, 'mmol/L') : r.value;
       };
-      const r = bestSingleRow(rows.filter((x) => inRange(toMg(x), f)));
+      // The reading is the largest number on the meter; the clock (rejected by its
+      // colon), date and memory numbers are much smaller. Rows of one digit are
+      // texture (no reading is below 10 mg/dL or 1.0 mmol/L).
+      const cands = rows.filter((x) => !x.colon && x.text.length >= 2 && inRange(toMg(x), f));
+      const sure = cands.filter((x) => x.confidence >= 0.5);
+      const tallest = Math.max(0, ...(sure.length ? sure : cands).map((x) => x.height));
+      const r = bestSingleRow(cands.filter((x) => x.height >= 0.6 * tallest));
       if (!r) return { values: {}, score: 0, confidence: 0 };
       return { values: { glucose: toMg(r) }, score: singleRowScore(r) / (r.text.length >= 3 ? 1 : 0.85), confidence: r.confidence, row: r, fieldRows: { glucose: r } };
     },

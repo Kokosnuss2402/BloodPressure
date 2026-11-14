@@ -560,8 +560,24 @@ function decodeRow(row, w, s, mask) {
     chars.push({ ...dec, bits });
   }
   const text = chars.map((c) => c.char).join('');
+  // tilt of the row in degrees (positive: the right end is lower), from a line
+  // through the digits' tops and bottoms; 0 for a single digit
+  let tilt = 0;
+  const full = row.filter((d) => d.w >= cellW * 0.5);
+  if (full.length >= 2) {
+    const xs = full.map((d) => (d.box.x0 + d.box.x1) / 2);
+    const mx = xs.reduce((a, x) => a + x, 0) / xs.length;
+    const vx = xs.reduce((a, x) => a + (x - mx) ** 2, 0);
+    const slope = (ys) => {
+      const my = ys.reduce((a, y) => a + y, 0) / ys.length;
+      return vx > 0 ? xs.reduce((a, x, i) => a + (x - mx) * (ys[i] - my), 0) / vx : 0;
+    };
+    const k = (slope(full.map((d) => d.box.y0)) + slope(full.map((d) => d.box.y1))) / 2;
+    tilt = (Math.atan(k) * 180) / Math.PI;
+  }
   return {
     text,
+    tilt,
     value: /^\d+$/.test(text) ? parseInt(text, 10) : null,
     confidence: chars.length ? exact / chars.length : 0,
     digits: chars,
@@ -609,6 +625,41 @@ function findDecimal(row, cands, w, slant) {
     }
   }
   return { decimals: best ? sorted.length - 1 - best.k : 0 };
+}
+
+/**
+ * Look for a colon (a clock such as "6:59"): two small compact blobs stacked
+ * vertically, one in the upper and one in the lower half of the row, in the gap
+ * between two digits.
+ */
+function findColon(row, cands, slant) {
+  if (row.length < 2) return false;
+  const t = median(row.map((d) => d.t));
+  const y0 = Math.min(...row.map((d) => d.box.y0));
+  const y1 = Math.max(...row.map((d) => d.box.y1));
+  const rh = y1 - y0 + 1;
+  const sorted = [...row].sort((a, b) => a.box.x0 - b.box.x0);
+  const gapOf = (cx) => {
+    for (let k = 0; k < sorted.length - 1; k++) {
+      const a = sorted[k].box;
+      const b = sorted[k + 1].box;
+      if (cx > (a.x0 + a.x1) / 2 + 0.3 * (a.x1 - a.x0) && cx < (b.x0 + b.x1) / 2 - 0.3 * (b.x1 - b.x0)) return k;
+    }
+    return -1;
+  };
+  const dots = [];
+  for (const c of cands) {
+    const bw = c.maxX - c.minX + 1;
+    const bh = c.maxY - c.minY + 1;
+    if (bw < 0.4 * t || bh < 0.4 * t || bw > 2.4 * t || bh > 2.4 * t) continue;
+    if (c.area < 0.2 * t * t || c.area / (bw * bh) < 0.45) continue;
+    const cy = (c.minY + c.maxY) / 2;
+    if (cy < y0 + 0.1 * rh || cy > y1 - 0.1 * rh) continue;
+    const cx = (c.minX + c.maxX) / 2 - slant * cy;
+    const k = gapOf(cx);
+    if (k >= 0) dots.push({ cx, cy, k, upper: cy < y0 + 0.5 * rh });
+  }
+  return dots.some((u) => u.upper && dots.some((l) => !l.upper && l.k === u.k && Math.abs(l.cx - u.cx) < 2 * t && l.cy - u.cy > 0.2 * rh));
 }
 
 /**
@@ -671,7 +722,11 @@ export function readPrepared(prep, opts = {}) {
   const dotCands = comps.filter((c) => !used.has(c.id) && c.area >= 3 && c.area < 20000);
 
   const decoded = rows
-    .map((r) => ({ ...decodeRow(r, w, slant, segPixels), ...findDecimal(r, dotCands, w, slant) }))
+    .map((r) => {
+      // a clock ("6:59") has a colon, not a decimal point
+      const colon = findColon(r, dotCands, slant);
+      return { ...decodeRow(r, w, slant, segPixels), ...(colon ? { decimals: 0 } : findDecimal(r, dotCands, w, slant)), colon };
+    })
     .filter((r) => r.digits.length >= 1)
     .map((r) => ({ ...r, number: Number.isFinite(r.value) ? r.value / 10 ** r.decimals : null }))
     .map((r) => ({

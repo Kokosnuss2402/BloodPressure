@@ -13,6 +13,7 @@ the values, add tags, then save.
 - **How the reader works**: it first looks for the display (clusters of segment strokes with a
   consistent stroke width, in any orientation) and reads only small crops around it, upright, tilted
   and turned, for dark and for bright (LED) digits. Only if that fails does it search the whole photo.
+  A tilted photo is straightened by the measured angle of the digit rows and read again.
   It then re-reads the display at several thresholds and votes digit by digit; values with a digit
   it is unsure about are marked "please check". A reading far from your recent ones (blood pressure,
   weight) gets a hint before saving.
@@ -24,7 +25,10 @@ the values, add tags, then save.
   ranges, morning vs. evening averages, averages by tag, and a breakdown by category (ESH 2023 /
   ADA). The colours are colour-blind safe (deuteranopia), and every series also has its own marker
   shape and label.
-- **Blood sugar** in mg/dL or mmol/L, with fasting / before / after meal context.
+- **Blood sugar** in mg/dL or mmol/L, with fasting / before / after meal context (and the time after
+  the meal). From a meter photo the reader takes the largest number and ignores the clock (recognised
+  by its colon), date and memory numbers; a decimal point means mmol/L. Tested with dark and backlit
+  LCDs, bright-on-black displays, glare, tilted, sideways and far-away photos.
 - **Weight** in kg or lb, read from a bathroom-scale photo taken from standing height (small, far-away
   display, LCD or LED, decimal point detected). With your height set, BMI and its WHO category are shown.
 - **Apple Health import (weight and blood sugar)**: websites cannot read Apple Health, so an iPhone

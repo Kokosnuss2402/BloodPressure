@@ -108,6 +108,54 @@ try {
     });
   }
 
+  // ---------------- 1c. blood glucose meters (one big number among a clock, a date and labels)
+  const meters = [
+    { value: '92' },
+    { value: '143' },
+    { value: '48' },
+    { value: '108', clock: '10:08' },
+    { value: '256', clock: '1:05' },
+    { value: '5.6', unit: 'mmol/L' },
+    { value: '12.4', unit: 'mmol/L' },
+    { value: '5.6', unit: 'mg/dL' }, // mmol/L meter, app set to mg/dL: the decimal point decides
+    { value: '117', backlit: true },
+    { value: '88', oled: true },
+    { value: '7.8', oled: true, unit: 'mmol/L' },
+    { value: '131', glare: true },
+    { value: '99', rotate: 7 },
+    { value: '164', rotate: -9 },
+    { value: '76', slant: 0 },
+    { value: '121', sideways: true },
+    { value: '95', far: true },
+    { value: '187', lowRes: true },
+    { value: '65', clock: '6:55', date: '' },
+    { value: '112', clock: '', date: '' },
+  ];
+  const desc = (c) => Object.entries(c).filter(([k]) => k !== 'value').map(([k, v]) => (v === true ? k : `${k} ${v || 'none'}`)).join(', ');
+  for (const [i, c] of meters.entries()) {
+    await check(`glucose meter ${c.value}${Object.keys(c).length > 1 ? ` (${desc(c)})` : ''}`, async () => {
+      const got = await page.evaluate(async ({ c, seed }) => {
+        const { syntheticGlucose } = await import('/test/synthetic-display.js');
+        const { readDisplay } = await import('/src/ocr/reader.js');
+        let cv = syntheticGlucose({ ...c, seed });
+        if (c.sideways) {
+          const r = document.createElement('canvas');
+          r.width = cv.height;
+          r.height = cv.width;
+          const ctx = r.getContext('2d');
+          ctx.translate(r.width, 0);
+          ctx.rotate(Math.PI / 2);
+          ctx.drawImage(cv, 0, 0);
+          cv = r;
+        }
+        const img = cv.getContext('2d').getImageData(0, 0, cv.width, cv.height);
+        return readDisplay(img, 'glucose', { settings: { glucoseUnit: c.unit ?? 'mg/dL' } }).values;
+      }, { c, seed: i + 3 });
+      const mg = c.value.includes('.') ? Math.round(Number(c.value) * 18.016) : Number(c.value);
+      assert.deepEqual(got, { glucose: mg });
+    });
+  }
+
   // ---------------- 2. real photos
   const photos = fs.existsSync(privateDir) ? fs.readdirSync(privateDir).filter((f) => /\.(jpe?g|png|webp)$/i.test(f)) : [];
   // scale photos: scale-<anything>-<kg>.jpg, read like the app does (2400 px canvas)
@@ -127,6 +175,25 @@ try {
         return readDisplay(c.getContext('2d').getImageData(0, 0, c.width, c.height), 'weight', { settings: { weightUnit: 'kg' } }).values;
       }, `/test/fixtures/private/${f}`);
       assert.deepEqual(got, { weight: kg });
+    });
+  }
+  // glucose meter photos: glucose-<anything>-<mg/dL>.jpg
+  for (const f of photos.filter((x) => /^glucose-.*-(\d+)\.\w+$/.test(x))) {
+    const mg = Number(f.match(/-(\d+)\.\w+$/)[1]);
+    await check(`glucose photo ${f}`, async () => {
+      const got = await page.evaluate(async (url) => {
+        const { readDisplay } = await import('/src/ocr/reader.js');
+        const img = new Image();
+        img.src = url;
+        await img.decode();
+        const s = Math.min(1, 2400 / Math.max(img.naturalWidth, img.naturalHeight));
+        const c = document.createElement('canvas');
+        c.width = Math.round(img.naturalWidth * s);
+        c.height = Math.round(img.naturalHeight * s);
+        c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+        return readDisplay(c.getContext('2d').getImageData(0, 0, c.width, c.height), 'glucose').values;
+      }, `/test/fixtures/private/${f}`);
+      assert.deepEqual(got, { glucose: mg });
     });
   }
   for (const f of photos) {
