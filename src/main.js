@@ -12,7 +12,7 @@ import {
   listAllRecords,
   newId,
 } from './db.js';
-import { MEASUREMENT_TYPES, TYPE_LIST, GLUCOSE_CONTEXTS, DEFAULT_TAGS, formatGlucose, formatWeight, toMgdl, MGDL_PER_MMOL, LB_PER_KG, bmiOf } from './types.js';
+import { MEASUREMENT_TYPES, TYPE_LIST, GLUCOSE_CONTEXTS, DEFAULT_TAGS, formatGlucose, formatWeight, formatDuration, glucoseContextLabel, toMgdl, MGDL_PER_MMOL, LB_PER_KG, bmiOf } from './types.js';
 import { toCSV, localDate } from './csv.js';
 import { averages, byTimeOfDay, inLastDays, trend, allTags, unusualVsHistory } from './stats.js';
 import { renderChart, markerSVG } from './chart.js';
@@ -309,7 +309,7 @@ function glucoseCards(glu, withChart) {
     const t = MEASUREMENT_TYPES.glucose;
     const week = inLastDays(glu, 7);
     const avg = averages(week, t);
-    const ctx = GLUCOSE_CONTEXTS.find((c) => c.id === last.values.context);
+    const ctx = glucoseContextLabel(last.values);
     const chartBox = h('div');
     if (withChart) queueMicrotask(() => renderChart(chartBox, glucoseChartConfig(inLastDays(glu, 30), [Date.now() - 30 * 86400000, Date.now()])));
     return [
@@ -320,7 +320,7 @@ function glucoseCards(glu, withChart) {
         h(
           'a',
           { href: `#/edit/${last.id}`, style: { textDecoration: 'none', color: 'inherit' } },
-          h('div', { class: 'reading' }, h('div', { class: 'big' }, formatGlucose(last.values.glucose, unit), h('small', {}, unit)), ctx ? h('div', { class: 'side' }, h('small', {}, ctx.label)) : null),
+          h('div', { class: 'reading' }, h('div', { class: 'big' }, formatGlucose(last.values.glucose, unit), h('small', {}, unit)), ctx ? h('div', { class: 'side' }, h('small', {}, ctx)) : null),
         ),
         h('div', { class: 'row', style: { marginTop: '10px' } }, levelPill(t.classify(last.values, state.settings)), h('span', { class: 'muted small' }, `7-day avg ${formatGlucose(avg.glucose, unit)} ${unit} · ${avg.count} readings`)),
       ),
@@ -486,8 +486,8 @@ function glucoseChartConfig(list, domain) {
     ],
     tooltip: (t, rows) => {
       const m = rows[0]?.point.ref;
-      const ctx = GLUCOSE_CONTEXTS.find((c) => c.id === m?.values.context);
-      return tipHeader(t) + tipRow('s-glucose', 'circle', '', `${formatGlucose(m.values.glucose, unit)} ${unit}`) + (ctx ? `<div class="muted">${ctx.label}</div>` : '');
+      const ctx = glucoseContextLabel(m?.values);
+      return tipHeader(t) + tipRow('s-glucose', 'circle', '', `${formatGlucose(m.values.glucose, unit)} ${unit}`) + (ctx ? `<div class="muted">${ctx}</div>` : '');
     },
     onSelect: (m) => (location.hash = `#/edit/${m.id}`),
   };
@@ -576,7 +576,7 @@ function entryRow(m) {
   } else {
     vals = h('div', { class: 'vals' }, `${formatGlucose(m.values.glucose, unit)} `, h('small', {}, unit));
   }
-  const ctx = m.type === 'glucose' ? GLUCOSE_CONTEXTS.find((c) => c.id === m.values.context)?.label : null;
+  const ctx = m.type === 'glucose' ? glucoseContextLabel(m.values) : null;
   const meta = [t.shortLabel, ctx, ...(m.tags ?? []).map((x) => `#${x}`), m.note ? 'note' : null, m.hasPhoto ? 'photo' : null, m.source === 'apple-health' ? 'Apple Health' : null]
     .filter(Boolean)
     .join(' · ');
@@ -1462,6 +1462,7 @@ async function renderEditor(root, { arg, params }) {
       if (!whenInput.value) return;
       s.when = new Date(whenInput.value);
       whenText.textContent = fmtWhen(s.when);
+      drawMealTime(); // the minutes stay; the shown meal start time follows
     });
     // desktop browsers only open the picker from the calendar icon; open it on any click
     whenInput.addEventListener('click', () => {
@@ -1494,11 +1495,20 @@ async function renderEditor(root, { arg, params }) {
               h('span', {}, 'Context'),
               h(
                 'select',
-                { onchange: (e) => (s.values.context = e.target.value) },
+                {
+                  id: 'in-context',
+                  onchange: (e) => {
+                    s.values.context = e.target.value;
+                    // a typical post-meal check is 2 h after the start of the meal
+                    if (s.values.context === 'after_meal' && !Number.isFinite(s.values.afterMealMin)) s.values.afterMealMin = 120;
+                    drawMealTime();
+                  },
+                },
                 GLUCOSE_CONTEXTS.map((c) => h('option', { value: c.id, selected: s.values.context === c.id }, c.label)),
               ),
             )
           : null,
+        s.type === 'glucose' ? mealBox : null,
         h('div', { class: 'field' }, h('span', {}, 'Date & time'), when),
       ),
       h('div', { class: 'card stack' }, h('h2', { style: { margin: 0 } }, 'Tags'), tagBox, h('label', { class: 'field' }, h('span', {}, 'Note'), note)),
@@ -1511,14 +1521,69 @@ async function renderEditor(root, { arg, params }) {
     );
     drawErrors();
     drawHints();
+    drawMealTime();
   }
 
   function currentValues() {
     const type = MEASUREMENT_TYPES[s.type];
     const v = {};
     for (const f of type.fields) if (Number.isFinite(s.values[f.key])) v[f.key] = s.values[f.key];
-    if (s.type === 'glucose') v.context = s.values.context;
+    if (s.type === 'glucose') {
+      v.context = s.values.context;
+      if (v.context === 'after_meal' && Number.isFinite(s.values.afterMealMin)) v.afterMealMin = s.values.afterMealMin;
+    }
     return v;
+  }
+
+  // ---- blood sugar: time after the meal (quick choices, minutes, or the meal's start time)
+  const mealBox = h('div', { class: 'field meal-time' });
+  const MEAL_PRESETS = [30, 60, 90, 120, 180];
+  function drawMealTime() {
+    mealBox.replaceChildren();
+    if (s.type !== 'glucose' || s.values.context !== 'after_meal') {
+      mealBox.hidden = true;
+      return;
+    }
+    mealBox.hidden = false;
+    const min = s.values.afterMealMin;
+    const setMin = (m) => {
+      s.values.afterMealMin = m;
+      drawMealTime();
+      drawErrors();
+    };
+    const minutes = h('input', { id: 'in-after-meal', type: 'text', inputmode: 'numeric', pattern: '[0-9]*', value: Number.isFinite(min) ? String(min) : '', class: 'inline-input', 'aria-label': 'Minutes after the meal' });
+    minutes.addEventListener('change', () => {
+      const n = parseInt(minutes.value, 10);
+      setMin(Number.isFinite(n) && n >= 0 ? Math.min(720, n) : undefined);
+    });
+    // the meal's start time, computed from the measurement time and back
+    const mealAt = Number.isFinite(min) ? new Date(s.when.getTime() - min * 60000) : null;
+    const pad = (n) => String(n).padStart(2, '0');
+    const meal = h('input', { id: 'in-meal-time', type: 'time', value: mealAt ? `${pad(mealAt.getHours())}:${pad(mealAt.getMinutes())}` : '', class: 'inline-input meal-clock', 'aria-label': 'Start of the meal' });
+    meal.addEventListener('change', () => {
+      if (!meal.value) return;
+      const [hh, mm] = meal.value.split(':').map(Number);
+      const start = new Date(s.when);
+      start.setHours(hh, mm, 0, 0);
+      if (start > s.when) start.setDate(start.getDate() - 1); // meal before midnight
+      setMin(Math.round((s.when - start) / 60000));
+    });
+    mealBox.append(
+      h('span', {}, 'Time after meal', Number.isFinite(min) ? h('span', { class: 'muted' }, ` · ${formatDuration(min)}`) : null),
+      h(
+        'div',
+        { class: 'chips', role: 'group', 'aria-label': 'Time after meal' },
+        MEAL_PRESETS.map((m) => h('button', { class: 'chip', type: 'button', 'aria-pressed': String(min === m), onclick: () => setMin(m) }, formatDuration(m))),
+      ),
+      h(
+        'div',
+        { class: 'meal-custom' },
+        h('label', { class: 'small', for: 'in-after-meal' }, 'Minutes'),
+        h('div', { class: 'row' }, minutes, h('span', { class: 'small muted' }, 'min')),
+        h('label', { class: 'small', for: 'in-meal-time' }, 'or meal started at'),
+        meal,
+      ),
+    );
   }
 
   function drawErrors() {

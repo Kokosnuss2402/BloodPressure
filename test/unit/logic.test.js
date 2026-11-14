@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { decodeSegments } from '../../src/ocr/sevenSegment.js';
-import { MEASUREMENT_TYPES, toMgdl, formatGlucose } from '../../src/types.js';
+import { MEASUREMENT_TYPES, toMgdl, formatGlucose, formatDuration, glucoseContextLabel } from '../../src/types.js';
 import { toCSV, CSV_COLUMNS } from '../../src/csv.js';
 import { averages, trend, allTags, byTimeOfDay, unusualVsHistory } from '../../src/stats.js';
 import { voteRows } from '../../src/ocr/reader.js';
@@ -75,7 +75,7 @@ test('CSV export escapes values and includes pulse and tags', () => {
   assert.match(lines[1], /,Blood pressure,108,71,101,/);
   assert.match(lines[1], /Morning; Left arm/);
   assert.match(lines[1], /"felt ""dizzy"", tired"/);
-  assert.match(lines[2], /,Blood sugar,,,,99,5\.5,Fasting,,,,Normal,/);
+  assert.match(lines[2], /,Blood sugar,,,,99,5\.5,Fasting,,,,,Normal,/);
   const semi = toCSV([{ id: '2', type: 'glucose', timestamp: '2026-11-05T08:00:00.000Z', values: { glucose: 99 } }], { delimiter: ';' });
   assert.match(semi, /;99;5,5;/); // decimal comma with semicolon separator
 });
@@ -122,4 +122,19 @@ test('hint when a reading is far from the recent ones', () => {
   const wt = [78.1, 78.4].map((w, i) => ({ type: 'weight', timestamp: new Date(now - (i + 1) * 86400000).toISOString(), values: { weight: w } }));
   assert.equal(unusualVsHistory('weight', { weight: 49.2 }, wt, now).length, 1);
   assert.equal(unusualVsHistory('weight', { weight: 78.9 }, wt, now).length, 0);
+});
+
+test('blood sugar after a meal: time after the meal in labels, validation and CSV', () => {
+  assert.equal(formatDuration(45), '45 min');
+  assert.equal(formatDuration(60), '1 h');
+  assert.equal(formatDuration(95), '1 h 35 min');
+  assert.equal(glucoseContextLabel({ context: 'after_meal', afterMealMin: 90 }), 'After meal · 1 h 30 min');
+  assert.equal(glucoseContextLabel({ context: 'after_meal' }), 'After meal'); // older readings without a time
+  assert.equal(glucoseContextLabel({ context: 'fasting', afterMealMin: 90 }), 'Fasting');
+  const glu = MEASUREMENT_TYPES.glucose;
+  assert.deepEqual(glu.validate({ glucose: 130, context: 'after_meal', afterMealMin: 120 }), []);
+  assert.equal(glu.validate({ glucose: 130, context: 'after_meal', afterMealMin: 900 }).length, 1);
+  assert.match(glu.format({ glucose: 130, context: 'after_meal', afterMealMin: 45 }, { glucoseUnit: 'mg/dL' }), /After meal · 45 min/);
+  const csv = toCSV([{ id: 'g', type: 'glucose', timestamp: '2026-11-05T13:00:00.000Z', values: { glucose: 130, context: 'after_meal', afterMealMin: 90 } }]);
+  assert.match(csv, /,After meal,90,/);
 });

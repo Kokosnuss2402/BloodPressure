@@ -13,12 +13,30 @@ export const LB_PER_KG = 2.20462;
 export const GLUCOSE_CONTEXTS = [
   { id: 'fasting', label: 'Fasting' },
   { id: 'before_meal', label: 'Before meal' },
-  { id: 'after_meal', label: 'After meal (2 h)' },
+  // with values.afterMealMin: minutes between the start of the meal and the measurement
+  { id: 'after_meal', label: 'After meal' },
   { id: 'bedtime', label: 'Bedtime' },
   { id: 'random', label: 'Other / random' },
 ];
 
 const inRange = (v, f) => Number.isFinite(v) && v >= f.min && v <= f.max;
+
+/** "45 min", "1 h", "1 h 30 min" */
+export function formatDuration(min) {
+  if (!Number.isFinite(min)) return '';
+  const h = Math.floor(min / 60);
+  const m = Math.round(min % 60);
+  if (!h) return `${m} min`;
+  return m ? `${h} h ${m} min` : `${h} h`;
+}
+
+/** Context of a glucose reading for display, e.g. "After meal · 1 h 30 min". */
+export function glucoseContextLabel(v) {
+  const ctx = GLUCOSE_CONTEXTS.find((c) => c.id === v?.context);
+  if (!ctx) return '';
+  if (ctx.id === 'after_meal' && Number.isFinite(v.afterMealMin)) return `${ctx.label} · ${formatDuration(v.afterMealMin)}`;
+  return ctx.label;
+}
 const round1 = (v) => Math.round(v * 10) / 10;
 
 /**
@@ -158,6 +176,8 @@ export const MEASUREMENT_TYPES = {
       const f = this.fields[0];
       if (v.glucose == null || v.glucose === '') return ['Glucose value is required'];
       if (!inRange(v.glucose, f)) return [`Glucose must be between ${f.min} and ${f.max} mg/dL`];
+      if (v.context === 'after_meal' && v.afterMealMin != null && !(v.afterMealMin >= 0 && v.afterMealMin <= 720))
+        return ['Time after meal must be between 0 and 12 hours'];
       return [];
     },
     classify(v) {
@@ -176,8 +196,8 @@ export const MEASUREMENT_TYPES = {
     },
     format(v, st) {
       const unit = st?.glucoseUnit ?? 'mg/dL';
-      const ctx = GLUCOSE_CONTEXTS.find((c) => c.id === v.context);
-      return `${formatGlucose(v.glucose, unit)} ${unit}${ctx ? ` · ${ctx.label}` : ''}`;
+      const ctx = glucoseContextLabel(v);
+      return `${formatGlucose(v.glucose, unit)} ${unit}${ctx ? ` · ${ctx}` : ''}`;
     },
     fromDisplayRows(rows, st) {
       // Glucose meters show one big number. A decimal point means mmol/L

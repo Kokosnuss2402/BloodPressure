@@ -329,6 +329,36 @@ try {
     if (shots) await app.screenshot({ path: path.join(shots, '09-overview-switch.png') });
   });
 
+  await check('e2e: blood sugar after a meal with the time after the meal', async () => {
+    await app.goto(base + '#/overview');
+    await app.goto(base + '#/add?type=glucose');
+    await app.waitForSelector('#in-glucose');
+    await app.fill('#in-glucose', '143');
+    await app.selectOption('#in-context', 'after_meal');
+    await app.waitForSelector('#in-after-meal');
+    assert.equal(await app.inputValue('#in-after-meal'), '120', 'defaults to 2 h');
+    await app.getByRole('button', { name: '1 h 30 min', exact: true }).click();
+    assert.equal(await app.inputValue('#in-after-meal'), '90');
+    // the meal's start time sets the minutes (measurement at 12:30, meal at 11:45 -> 45 min)
+    await app.fill('#in-when', '2026-11-05T12:30');
+    await app.fill('#in-meal-time', '11:45');
+    await app.locator('#in-meal-time').dispatchEvent('change');
+    assert.equal(await app.inputValue('#in-after-meal'), '45');
+    await app.getByRole('button', { name: 'Save', exact: true }).click();
+    await app.waitForSelector('.reading .big');
+    await app.goto(base + '#/history');
+    await app.waitForSelector('.entry');
+    assert.equal(await app.locator('.entry', { hasText: 'After meal · 45 min' }).count(), 1);
+    const stored = await app.evaluate(async () => (await (await import('/src/db.js')).listMeasurements()).find((m) => m.values.glucose === 143)?.values);
+    assert.deepEqual(stored, { glucose: 143, context: 'after_meal', afterMealMin: 45 });
+    if (shots) {
+      await app.goto(base + '#/edit/' + (await app.evaluate(async () => (await (await import('/src/db.js')).listMeasurements()).find((m) => m.values.glucose === 143).id)));
+      await app.waitForSelector('#in-after-meal');
+      await app.locator('.meal-time').scrollIntoViewIfNeeded();
+      await app.screenshot({ path: path.join(shots, '12-after-meal.png') });
+    }
+  });
+
   await check('e2e: CSV export contains pulse and tags', async () => {
     await app.goto(base + '#/history');
     await app.waitForSelector('.entry');
